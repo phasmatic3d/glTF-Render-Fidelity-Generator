@@ -13,12 +13,11 @@
  * limitations under the License.
  */
 
-// 'dspbr-pt' is the local package at dspbr-pt/packages/lib (a file:
+// 'dspbr-pt' is the local package at dspbr-pt/packages/lib
 // built with `npm run build:dspbr-pt`
 import {createPathtracingViewport, PathtracingViewport} from 'dspbr-pt';
 import {css, html, LitElement} from 'lit';
 import {customElement, property} from 'lit/decorators.js'
-
 import {ScenarioConfig} from '../../common.js';
 
 const DEFAULT_NUM_SAMPLES = 64;
@@ -153,9 +152,7 @@ export class PathtracingViewer extends LitElement {
       center[2] = eye[2] - Math.sin(phi) * Math.cos(theta);
     }
 
-    // The orbit's own up direction. It equals world +Y projected onto the
-    // image plane, but stays defined when looking straight up or down
-    // (phi = 0 or 180), where theta then sets the roll like orbit controls.
+    // Handle phi = 0 or 180.
     const up = {
       x: -Math.cos(phi) * Math.sin(theta),
       y: Math.sin(phi),
