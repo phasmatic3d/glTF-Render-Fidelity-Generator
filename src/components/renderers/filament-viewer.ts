@@ -117,7 +117,8 @@ export class FilamentViewer extends LitElement {
 
   private[$initialize]() {
     this[$canvas] = this.shadowRoot!.querySelector('canvas');
-    const engine = Engine.create(this[$canvas]!, {alpha: true});
+    const engine = Engine.create(
+        this[$canvas]!, {alpha: true} as Parameters<typeof Engine.create>[1]);
     const view = engine.createView();
 
     const entityManager = EntityManager.get();
@@ -303,7 +304,6 @@ export class FilamentViewer extends LitElement {
     const aspect = width / height;
 
     const center = [target.x, target.y, target.z];
-
     const theta = orbit.theta * Math.PI / 180;
     const phi = orbit.phi * Math.PI / 180;
     const radiusSinPhi = orbit.radius * Math.sin(phi);
@@ -331,7 +331,12 @@ export class FilamentViewer extends LitElement {
 
     const camera = this[$camera];
     camera.setProjectionFov(verticalFoV, aspect, near, far, Fov!.VERTICAL);
-    const up = [0, 1, 0];
+    // Handle phi = 0 or 180.
+    const up = [
+      -Math.cos(phi) * Math.sin(theta),
+      Math.sin(phi),
+      -Math.cos(phi) * Math.cos(theta)
+    ];
     camera.lookAt(eye, center, up);
     camera.setExposureDirect(1.0);
   }
