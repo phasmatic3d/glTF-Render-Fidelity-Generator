@@ -13,50 +13,46 @@
  * limitations under the License.
  */
 
-// @ts-ignore
-import {PathtracingRenderer, PerspectiveCamera, Box3, Loader} from 'dspbr-pt';
+// 'dspbr-pt' is the local package at dspbr-pt/packages/lib (a file:
+// built with `npm run build:dspbr-pt`
+import {createPathtracingViewport, PathtracingViewport} from 'dspbr-pt';
 import {css, html, LitElement} from 'lit';
 import {customElement, property} from 'lit/decorators.js'
+
 import {ScenarioConfig} from '../../common.js';
 
-const $canvas = Symbol('canvas');
+const DEFAULT_NUM_SAMPLES = 64;
 
-const $initialize = Symbol('initialize');
+const $canvas = Symbol('canvas');
+const $viewport = Symbol('viewport');
 const $updateScenario = Symbol('scenario');
 const $updateSize = Symbol('updateSize');
-
-const $renderer = Symbol('renderer');
-const $camera = Symbol('camera');
-const $boundingBox = Symbol('boundingBox');
+const $updateCamera = Symbol('updateCamera');
 
 @customElement('dspbr-pt-viewer')
 export class PathtracingViewer extends LitElement {
   @property({type: Object}) scenario: ScenarioConfig|null = null;
 
-  private[$renderer]: any|null;
-  private[$camera]: any|null;
-  private[$boundingBox]: Box3;
-
   private[$canvas]: HTMLCanvasElement|null = null;
-
-  constructor() {
-    super();
-
-    this[$initialize]();
-  }
-
-  connectedCallback() {
-    super.connectedCallback();
-  }
+  private[$viewport]: PathtracingViewport|null = null;
 
   disconnectedCallback() {
+    super.disconnectedCallback();
+    this[$viewport]?.dispose();
+    this[$viewport] = null;
   }
 
   updated(changedProperties: Map<string, any>) {
     super.updated(changedProperties);
 
     if (changedProperties.has('scenario') && this.scenario != null) {
-      this[$updateScenario](this.scenario);
+      this[$updateScenario](this.scenario).catch((error) => {
+        console.error(`dspbr-pt failed to render scenario: ${
+            error?.stack ?? error}`);
+        // Lets the framework fail this scenario instead of waiting for it
+        this.dispatchEvent(new CustomEvent(
+            'model-error', {detail: {message: String(error?.message ?? error)}}));
+      });
     }
   }
 
@@ -72,83 +68,74 @@ export class PathtracingViewer extends LitElement {
     return html`<canvas id="canvas"></canvas>`;
   }
 
-  private[$initialize]() {
-    this[$updateSize]();
-  }
-
   private async[$updateScenario](scenario: ScenarioConfig) {
     this[$canvas] = this.shadowRoot!.querySelector('canvas');
 
+    this[$viewport]?.dispose();
+    const viewport = createPathtracingViewport({
+      canvas: this[$canvas]!,
+      settings: {
+        pixelRatio: 1.0,
+        exposure: 1.0,
+        maxBounces: 8,
+        toneMapping: 'AcesFilm',
+        showBackground: scenario.renderSkybox,
+        iblRotationDegrees: 180,
+        backgroundColor: [0, 0, 0, 0],
+      },
+    });
+    this[$viewport] = viewport;
 
-    this[$camera] = new PerspectiveCamera(45, this[$canvas]!.width/this[$canvas]!.height, 0.01, 1000);
-    this[$renderer] = new PathtracingRenderer({ canvas: this[$canvas]!});
+    this[$updateSize]();
 
-    this[$renderer].pixelRatio = 1.0;
-    // this.renderer.iblRotation = 180.0;
-    this[$renderer].exposure = 1.0;
-    this[$renderer].maxBounces = 8;
-    this[$renderer].tonemapping = "AcesFilm";
+    const resolveUrl = (url: string) => new URL(url, self.location.href).href;
 
-    await new Promise<void>((resolve) => {
-      // console.log('Loading resources for', scenario.model);
+    await Promise.all([
+      viewport.loadSceneFromUrl(resolveUrl(scenario.model)),
+      scenario.lighting ? viewport.loadIblFromUrl(resolveUrl(scenario.lighting)) :
+                          Promise.resolve(),
+    ]);
 
-      Loader.loadScene(scenario.model, false).then((gltf: any) => {
-        this[$boundingBox] = new Box3().setFromObject(gltf.scene);
-        this[$renderer].setScene(gltf.scene, gltf).then(() => {
-          if (scenario.lighting) {
-            Loader.loadIBL(scenario.lighting).then((ibl: any) => {
-              // console.log("Loaded ibl", scenario.lighting);
-              this[$renderer].setIBL(ibl);
-            });
-          }
-          this[$updateSize]();
-          this[$renderer].resize(this[$canvas]!.width, this[$canvas]!.height);
+    this[$updateCamera]();
 
-          if (!scenario.renderSkybox) {
-            this[$renderer].showBackground = false;  // transparent background
-          }
-          resolve();
-        });
-      });
+    const numSamples = scenario.pt?.numSamples ?? DEFAULT_NUM_SAMPLES;
+    console.log('Rendering ' + numSamples + ' samples');
 
+    viewport.on('frameRendered', ({frameCount}) => {
+      if (frameCount % 100 == 0) {
+        console.log(frameCount, '/', numSamples);
+      }
     });
 
-    let numSamples = scenario.pt?.numSamples;
-
-    if (numSamples == null) {
-      numSamples = 8192;
-    }
-
-    console.log('Rendering ' + numSamples + ' samples');
-    this[$renderer].render(this[$camera]!, numSamples, (sampleCount: number) => {
-        if(sampleCount % 100 == 0) {
-          console.log(sampleCount, '/', numSamples);
-        }
-      },
-      () => {
-        console.log('Done!');
-        requestAnimationFrame(() => {
-          this.dispatchEvent(
-              new CustomEvent('model-visibility', {detail: {visible: true}}));
-        });
+    viewport.on('renderFinished', () => {
+      console.log('Done!');
+      requestAnimationFrame(() => {
+        this.dispatchEvent(
+            new CustomEvent('model-visibility', {detail: {visible: true}}));
       });
+    });
+
+    viewport.start(numSamples);
   }
 
   private[$updateSize]() {
-    if (this[$canvas] == null || this.scenario == null) {
-      // Not initialized yet. This will be invoked again when initialized.
+    if (this[$canvas] == null || this[$viewport] == null ||
+        this.scenario == null) {
       return;
     }
 
-    const {dimensions, target, orbit, verticalFoV} = this.scenario;
+    const {dimensions} = this.scenario;
 
     const width = dimensions.width * window.devicePixelRatio;
     const height = dimensions.height * window.devicePixelRatio;
 
-    this[$canvas]!.width = width;
-    this[$canvas]!.height = height;
     this[$canvas]!.style.width = `${dimensions.width}px`;
     this[$canvas]!.style.height = `${dimensions.height}px`;
+    this[$viewport]!.resize(width, height);
+  }
+
+  private[$updateCamera]() {
+    const {target, orbit, verticalFoV} = this.scenario!;
 
     const center = [target.x, target.y, target.z];
 
@@ -166,21 +153,21 @@ export class PathtracingViewer extends LitElement {
       center[2] = eye[2] - Math.sin(phi) * Math.cos(theta);
     }
 
-    const bbox =  this[$boundingBox];
-    const modelRadius = Math.max(
-        bbox.max.x - bbox.min.x,
-        bbox.max.y - bbox.min.y,
-        bbox.max.z - bbox.min.z);
-    const far = 2 * Math.max(modelRadius, orbit.radius);
-    const near = far / 1000;
+    // The orbit's own up direction. It equals world +Y projected onto the
+    // image plane, but stays defined when looking straight up or down
+    // (phi = 0 or 180), where theta then sets the roll like orbit controls.
+    const up = {
+      x: -Math.cos(phi) * Math.sin(theta),
+      y: Math.sin(phi),
+      z: -Math.cos(phi) * Math.cos(theta)
+    };
 
-    this[$camera].position.set(eye[0], eye[1], eye[2]);
-    this[$camera].lookAt(center[0], center[1], center[2]);
-    this[$camera].updateMatrixWorld();
-
-    this[$camera].aspect = this[$canvas]!.width/this[$canvas]!.height;
-    this[$camera].fov = verticalFoV;
-    this[$camera].near = near;
-    this[$camera].far = far;
+    this[$viewport]!.setLookAtCamera({
+      position: {x: eye[0], y: eye[1], z: eye[2]},
+      target: {x: center[0], y: center[1], z: center[2]},
+      up,
+      fov: verticalFoV,
+      near: Math.max(orbit.radius, 1e-3) / 1000,
+    });
   }
 }
