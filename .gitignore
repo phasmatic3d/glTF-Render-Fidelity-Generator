@@ -1,5 +1,13 @@
 node_modules
+/dspbr-pt/
+/glTF-Sample-Renderer/
+/vk_gltf_renderer/
 test/renderers/filament/ktx
 test/renderers/filament/cmgen
+test/renderers/filament/cmgen.exe
+test/renderers/filament/cmgen.version
+test/renderers/filament/cmgen-src
+test/renderers/filament/runtime
+test/renderers/model-viewer/runtime
 test/results
 test/renderers/dspbr-pt/shader

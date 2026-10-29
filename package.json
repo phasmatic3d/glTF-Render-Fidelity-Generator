@@ -7,9 +7,15 @@
   "scripts": {
     "test": "node --experimental-modules ./lib/workflows/test-fidelity.js --config=./test/config.json",
     "render-goldens": "node --experimental-modules ./lib/workflows/render-goldens.js --config=./test/config.json",
-    "build": "tsc && rollup -c",
-    "prepare": "scripts/fetch-khronos-gltf-samples.sh",
-    "clean": "rm -rf ./dist ./lib ./test/results ./test/renderers/filament/{cmgen,ktx}"
+    "build": "npm run build:dspbr-pt && npm run build:gltf-sample-renderer && tsc && rollup -c",
+    "prepare": "npm run fetch:filament && npm run fetch:model-viewer && node scripts/fetch-renderers.js",
+    "fetch:renderers": "node scripts/fetch-renderers.js",
+    "fetch:filament": "node scripts/fetch-filament.js",
+    "fetch:model-viewer": "node scripts/fetch-model-viewer.js",
+    "build:gltf-sample-renderer": "cd glTF-Sample-Renderer && npm install --ignore-scripts && npm run build",
+    "build:dspbr-pt": "cd dspbr-pt && node .yarn/releases/yarn-3.2.0.cjs install && node .yarn/releases/yarn-3.2.0.cjs workspace dspbr-pt run build",
+    "build:vk_gltf_renderer": "node scripts/build-vk-gltf-renderer.js",
+    "clean": "rimraf dist lib test/results test/renderers/filament/cmgen test/renderers/filament/cmgen.exe test/renderers/filament/cmgen.version test/renderers/filament/cmgen-src test/renderers/filament/ktx test/renderers/filament/runtime test/renderers/model-viewer/runtime"
   },
   "contributors": [
     "Chris Joel <cdata@google.com>",
@@ -18,39 +24,43 @@
   ],
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=12.0.0"
+    "node": ">=20.0.0"
   },
   "dependencies": {
-    "@actions/core": "^1.2.4",
-    "@babylonjs/core": "^6.25.0",
-    "@babylonjs/loaders": "^6.25.0",
-    "@khronosgroup/gltf-viewer": "^1.0.9",
-    "@polymer/paper-button": "^3.0.1",
-    "@polymer/paper-radio-group": "^3.0.1",
-    "@polymer/paper-slider": "^3.0.1",
-    "@types/http-server": "^0.10.0",
+    "@actions/core": "^3.0.1",
+    "@babylonjs/core": "^9.29.0",
+    "@babylonjs/loaders": "^9.29.0",
+    "@khronosgroup/gltf-viewer": "file:./glTF-Sample-Renderer",
+    "@types/http-server": "^0.12.4",
     "@types/pngjs": "^6.0.5",
     "@types/three": "^0.185.0",
-    "filament": "1.44.0",
+    "dspbr-pt": "file:./dspbr-pt/packages/lib",
     "http-server": "^14.1.1",
-    "lit": "^2.7.2",
+    "jpeg-js": "^0.4.4",
+    "lit": "^3.3.3",
     "mkdirp": "^3.0.1",
     "pngjs": "^7.0.0",
-    "puppeteer": "^23.4.0",
-    "rimraf": "^6.0.1",
+    "puppeteer": "^25.12.0",
+    "rhodonite": "^0.19.9",
+    "rimraf": "^6.1.3",
     "three": "^0.185.0",
     "three-gpu-pathtracer": "^0.0.23",
     "three-mesh-bvh": "^0.8.2",
-    "yargs": "^17.7.2"
+    "yargs": "^18.2.0"
   },
   "devDependencies": {
-    "@rollup/plugin-commonjs": "^28.0.0",
-    "@rollup/plugin-node-resolve": "^15.3.0",
-    "@rollup/plugin-replace": "^6.0.1",
-    "@types/yargs": "^17.0.29",
-    "polymer-build": "^3.1.4",
-    "rollup": "^4.24.3",
-    "rollup-plugin-external-globals": "^0.12.0",
-    "typescript": "5.6.3"
+    "@rollup/plugin-commonjs": "^29.0.3",
+    "@rollup/plugin-node-resolve": "^16.0.3",
+    "@rollup/plugin-replace": "^6.0.3",
+    "@types/node": "^24.0.0",
+    "@types/yargs": "^17.0.35",
+    "gl-matrix": "^3.4.3",
+    "rollup": "^4.64.0",
+    "rollup-plugin-external-globals": "^0.13.0",
+    "tar": "^7.5.22",
+    "typescript": "^7.0.2"
+  },
+  "allowScripts": {
+    "puppeteer@25.12.0": true
   }
 }

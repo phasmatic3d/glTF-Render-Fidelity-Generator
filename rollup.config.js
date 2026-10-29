@@ -39,6 +39,8 @@ const buildTarget = (input, outputFormat) => ({
     file: `./dist/${basename(input)}`,
     sourcemap: true,
     format: outputFormat,
+    // dspbr-pt lazy-loads TinyBVH WASM.
+    inlineDynamicImports: true,
     name: outputFormat === 'esm' ?
         undefined :
         basename(input)
@@ -63,6 +65,8 @@ const outputOptions = [
   buildTarget('./lib/components/renderers/gltf-sample-viewer.js', 'esm'),
   buildTarget(
       './lib/components/renderers/three-gpu-pathtracer-viewer.js', 'esm'),
+  buildTarget('./lib/components/renderers/dspbr-pt-viewer.js', 'esm'),
+  buildTarget('./lib/components/renderers/rhodonite-viewer.js', 'esm'),
   buildTarget('./lib/components/renderers/three-viewer.js', 'esm'),
   buildTarget('./lib/image-comparison-worker.js', 'iife')
 ];

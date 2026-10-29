@@ -2,7 +2,7 @@
   "compilerOptions": {
     "target": "es2021",
     "module": "ES2020",
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
     "lib": [
       "es2017",
       "dom"
@@ -21,7 +21,10 @@
     "noErrorTruncation": true,
     "declaration": true,
     "skipLibCheck": true,
-    "useUnknownInCatchVariables": false
+    "useUnknownInCatchVariables": false,
+    "paths": {
+      "filament": ["./test/renderers/filament/runtime/filament.d.ts"]
+    }
   },
   "include": [
     "./src/**/*.ts"
