@@ -5,6 +5,9 @@ import {customElement, property} from 'lit/decorators.js'
 
 import {ScenarioConfig} from '../../common.js';
 
+// 'gltf-sample-renderer' is the local package at glTF-Sample-Renderer/dist
+// built with `npm run build:gltf-sample-renderer`
+const GLTF_SAMPLE_RENDERER_DIST = '../../../glTF-Sample-Renderer/dist';
 
 const $updateScenario = Symbol('updateScenario');
 const $updateSize = Symbol('updateSize');
@@ -51,7 +54,8 @@ export class GltfSampleViewer extends LitElement {
       this[$view] = new GltfView(
           this[$canvas]!.getContext('webgl2', {alpha: true, antialias: true}));
       this[$state] = this[$view].createState();
-      this[$resourceLoader] = this[$view].createResourceLoader();
+      this[$resourceLoader] = this[$view].createResourceLoader(
+          undefined, undefined, `${GLTF_SAMPLE_RENDERER_DIST}/libs/`);
     }
     this[$updateSize]();
 
@@ -74,12 +78,9 @@ export class GltfSampleViewer extends LitElement {
     this[$state].renderingParameters.clearColor = [0, 0, 0, 0];
 
     const luts = {
-      lut_ggx_file:
-          '../../../node_modules/@khronosgroup/gltf-viewer/dist/assets/lut_ggx.png',
-      lut_charlie_file:
-          '../../../node_modules/@khronosgroup/gltf-viewer/dist/assets/lut_charlie.png',
-      lut_sheen_E_file:
-          '../../../node_modules/@khronosgroup/gltf-viewer/dist/assets/lut_sheen_E.png'
+      lut_ggx_file: `${GLTF_SAMPLE_RENDERER_DIST}/assets/lut_ggx.png`,
+      lut_charlie_file: `${GLTF_SAMPLE_RENDERER_DIST}/assets/lut_charlie.png`,
+      lut_sheen_E_file: `${GLTF_SAMPLE_RENDERER_DIST}/assets/lut_sheen_E.png`
     };
 
     this[$state].renderingParameters.environmentRotation = 0;
