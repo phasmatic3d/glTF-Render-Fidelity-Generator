@@ -15,11 +15,14 @@
 
 import {css, html, LitElement} from 'lit';
 import {customElement, property} from 'lit/decorators.js';
+//import {ACESFilmicToneMapping, Box3, EquirectangularReflectionMapping, Group, MathUtils, Mesh, MeshStandardMaterial, Object3D, PerspectiveCamera, PMREMGenerator, Scene, Sphere, SRGBColorSpace, Texture, TextureLoader, WebGLRenderer} from 'three';
 import {ACESFilmicToneMapping, Box3, EquirectangularReflectionMapping, Group, MathUtils, PerspectiveCamera, PMREMGenerator, Scene, Sphere, SRGBColorSpace, Texture, TextureLoader, WebGLRenderer} from 'three';
+//import * as MikkTSpace from 'three/examples/jsm/libs/mikktspace.module.js';
 import {DRACOLoader} from 'three/examples/jsm/loaders/DRACOLoader.js';
 import {GLTFLoader} from 'three/examples/jsm/loaders/GLTFLoader.js';
 import {HDRLoader} from 'three/examples/jsm/loaders/HDRLoader.js';
 import {KTX2Loader} from 'three/examples/jsm/loaders/KTX2Loader.js';
+//import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 import {ScenarioConfig} from '../../common.js';
 
@@ -138,6 +141,37 @@ export class ThreeViewer extends LitElement {
       this[$loadEnvironment](lighting),
       this[$gltfLoader].loadAsync(model),
     ]);
+
+    // Generate MikkTSpace tangents for meshes that lack them, as the glTF spec
+    // requires. three's screen-space derivative tangents flip the bitangent;
+    // GLTFLoader compensates for normal maps only, which mirrors texture-driven
+    // anisotropy directions.
+    /*await MikkTSpace.ready;
+    const unflippedMaterials = new Set<MeshStandardMaterial>();
+    gltf.scene.traverse((object: Object3D) => {
+      if (!(object instanceof Mesh) || object.geometry.attributes.tangent ||
+          !object.geometry.hasAttribute('normal') ||
+          !object.geometry.hasAttribute('uv')) {
+        return;
+      }
+      BufferGeometryUtils.computeMikkTSpaceTangents(object.geometry, MikkTSpace);
+
+      // Undo GLTFLoader's derivative-tangent normal scale flip, once per
+      // (possibly shared) material
+      const materials =
+          Array.isArray(object.material) ? object.material : [object.material];
+      for (const material of materials) {
+        if (!(material instanceof MeshStandardMaterial) ||
+            unflippedMaterials.has(material)) {
+          continue;
+        }
+        unflippedMaterials.add(material);
+        material.normalScale.y *= -1;
+        if ('clearcoatNormalScale' in material) {
+          (material as any).clearcoatNormalScale.y *= -1;
+        }
+      }
+    });*/
 
     // Image-based lighting: use the equirectangular HDR as the IBL source via a
     // pre-filtered mipmapped radiance environment map (PMREM), matching how

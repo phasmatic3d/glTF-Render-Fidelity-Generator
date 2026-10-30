@@ -15,12 +15,13 @@
 
 import {css, html, LitElement} from 'lit';
 import {customElement, property} from 'lit/decorators.js';
-import {ACESFilmicToneMapping, Box3, BufferAttribute, CustomBlending, DirectionalLight, Group, MathUtils, Mesh, MeshBasicMaterial, Object3D, PerspectiveCamera, Sphere, WebGLRenderer} from 'three';
+//import {ACESFilmicToneMapping, Box3, BufferAttribute, CustomBlending, DirectionalLight, Group, MathUtils, Mesh, MeshBasicMaterial, Object3D, PerspectiveCamera, Sphere, WebGLRenderer} from 'three';
+import {ACESFilmicToneMapping, Box3, BufferAttribute, CustomBlending, DirectionalLight, Group, MathUtils, Mesh, MeshBasicMaterial, MeshStandardMaterial, Object3D, PerspectiveCamera, Sphere, WebGLRenderer} from 'three';
 import {PathTracingRenderer, PathTracingSceneGenerator, PhysicalPathTracingMaterial} from 'three-gpu-pathtracer';
 import {OrbitControls} from 'three/examples/jsm/controls/OrbitControls.js';
 import * as MikkTSpace from 'three/examples/jsm/libs/mikktspace.module.js';
 import {GLTFLoader} from 'three/examples/jsm/loaders/GLTFLoader.js';
-import {RGBELoader} from 'three/examples/jsm/loaders/RGBELoader.js';
+import {HDRLoader} from 'three/examples/jsm/loaders/HDRLoader.js';
 import {FullScreenQuad} from 'three/examples/jsm/postprocessing/Pass.js';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
@@ -80,12 +81,16 @@ export class ThreePathTracerViewer extends LitElement {
     this[$pathtracer].material = new PhysicalPathTracingMaterial({
       filterGlossyFactor: 0.5,
     });
-    this[$pathtracer].camera = this[$camera];
+    this[$pathtracer].setCamera(this[$camera]);
     this[$pathtracer].alpha = true;
 
     this[$controls] = new OrbitControls(
         this[$camera], this[$renderer].domElement as unknown as HTMLElement);
-    this[$controls].addEventListener('change', () => this[$pathtracer].reset());
+    this[$controls].addEventListener('change', () => {
+      this[$camera].updateMatrixWorld();
+      this[$pathtracer].setCamera(this[$camera]);
+      this[$pathtracer].reset();
+    });
   }
 
 
@@ -118,7 +123,7 @@ export class ThreePathTracerViewer extends LitElement {
     renderer.clear();
 
     // load assets
-    const hdr = await new RGBELoader().loadAsync(lighting);
+    const hdr = await new HDRLoader().loadAsync(lighting);
     const gltf = await new GLTFLoader().loadAsync(model);
 
     // remove directional light parents to replicate issue with light targets
@@ -134,6 +139,7 @@ export class ThreePathTracerViewer extends LitElement {
 
     // generate tangents if they're not present
     await MikkTSpace.ready;
+    const unflippedMaterials = new Set<MeshStandardMaterial>();
     gltf.scene.traverse((c: Object3D) => {
       if (c instanceof Mesh) {
         if (!c.geometry.hasAttribute('normal')) {
@@ -144,6 +150,24 @@ export class ThreePathTracerViewer extends LitElement {
           if (c.geometry.hasAttribute('uv')) {
             BufferGeometryUtils.computeMikkTSpaceTangents(
                 c.geometry, MikkTSpace);
+
+            // GLTFLoader flips the normal scale Y for meshes without tangents
+            // to suit three's derivative tangents. The path tracer always uses
+            // the tangent attribute, so undo it once per (possibly shared)
+            // material
+            const materials =
+                Array.isArray(c.material) ? c.material : [c.material];
+            for (const material of materials) {
+              if (!(material instanceof MeshStandardMaterial) ||
+                  unflippedMaterials.has(material)) {
+                continue;
+              }
+              unflippedMaterials.add(material);
+              //material.normalScale.y *= -1;
+              if ('clearcoatNormalScale' in material) {
+                (material as any).clearcoatNormalScale.y *= -1;
+              }
+            }
           } else {
             c.geometry.setAttribute(
                 'tangent',
@@ -177,6 +201,8 @@ export class ThreePathTracerViewer extends LitElement {
     camera.fov = verticalFoV;
     camera.updateProjectionMatrix();
     controls.update();
+    camera.updateMatrixWorld();
+    pathtracer.setCamera(camera);
 
     const targetGroup = new Group();
     targetGroup.position.set(-target.x, -target.y, -target.z);
@@ -184,9 +210,9 @@ export class ThreePathTracerViewer extends LitElement {
     targetGroup.updateMatrixWorld(true);
 
     // process assets
-    const generator = new PathTracingSceneGenerator();
-    const {bvh, textures, materials, lights} = generator.generate(targetGroup);
-    const geometry = bvh.geometry;
+    const generator = new PathTracingSceneGenerator(targetGroup);
+    const {bvh, geometry, textures, materials, lights, iesTextures} =
+        generator.generate();
 
     // update bvh and geometry info
     ptMaterial.bvh.updateFrom(bvh);
@@ -202,10 +228,11 @@ export class ThreePathTracerViewer extends LitElement {
 
     // update material and texture info
     ptMaterial.materialIndexAttribute.updateFrom(
-        bvh.geometry.attributes.materialIndex);
-    ptMaterial.textures.setTextures(renderer, 2048, 2048, textures);
+        geometry.attributes.materialIndex);
+    ptMaterial.textures.setTextures(renderer, textures, 2048, 2048);
     ptMaterial.materials.updateFrom(materials, textures);
-    ptMaterial.lights.updateFrom(lights);
+    ptMaterial.lights.updateFrom(lights, iesTextures);
+    ptMaterial.iesProfiles.setTextures(renderer, iesTextures);
 
     // update envmap
     ptMaterial.envMapInfo.updateFrom(hdr);
@@ -257,6 +284,7 @@ export class ThreePathTracerViewer extends LitElement {
 
     camera.aspect = width / height;
     camera.updateProjectionMatrix();
+    pathtracer.setCamera(camera);
 
     pathtracer.setSize(width * dpr, height * dpr);
 
