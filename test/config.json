@@ -48,7 +48,18 @@
           "--factory-startup",
           "-noaudio",
           "-P",
-          "test/renderers/blender-cycles/render.py"
+          "test/renderers/blender-cycles/render.py",
+          "--"
+        ]
+      }
+    },
+    {
+      "name": "vk-gltf-renderer",
+      "description": "NVIDIA vk_gltf_renderer path tracer",
+      "command": {
+        "executable": "node",
+        "args": [
+          "test/renderers/vk-gltf-renderer/render.js"
         ]
       }
     }
