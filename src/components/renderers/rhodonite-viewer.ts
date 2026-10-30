@@ -1,27 +1,33 @@
+import {css, html, LitElement} from 'lit';
+import {customElement, property} from 'lit/decorators.js'
+import Rn from 'rhodonite';
 
-import {css, customElement, html, LitElement, property} from 'lit-element';
-
-// @ts-ignore
-import Rn from '../../../node_modules/rhodonite/dist/esm/index.mjs';
 import {ScenarioConfig} from '../../common.js';
 
-const $isRhodoniteInitDone = Symbol('isRhodoniteInitDone');
-const $updateSize = Symbol('updateSize');
-const $updateScenario = Symbol('updateScenario');
+// Resolution of the environment cube map and of the prefiltered IBL maps.
+const CUBE_MAP_SIZE = 512;
+// Frames to render after everything is loaded before signalling readiness,
+// so that MSAA resolves and the transmission back buffer are populated.
+const FRAMES_BEFORE_READY = 3;
+
 const $canvas = Symbol('canvas');
+const $engine = Symbol('engine');
+const $updateScenario = Symbol('updateScenario');
+const $updateSize = Symbol('updateSize');
 
 @customElement('rhodonite-viewer')
 export class RhodoniteViewer extends LitElement {
   @property({type: Object}) scenario: ScenarioConfig|null = null;
+
   private[$canvas]: HTMLCanvasElement|null = null;
-  private[$isRhodoniteInitDone] = false;
+  private[$engine]: Rn.Engine|null = null;
 
   static get styles() {
     return css`
-  :host {
-    display: block;
-  }
-  `;
+:host {
+  display: block;
+}
+`;
   }
 
   render() {
@@ -30,153 +36,96 @@ export class RhodoniteViewer extends LitElement {
 
   updated(changedProperties: Map<string, any>) {
     super.updated(changedProperties);
-    this[$updateSize]();
 
     if (changedProperties.has('scenario') && this.scenario != null) {
-      this[$updateScenario](this.scenario);
+      this[$updateScenario](this.scenario).catch((error) => {
+        console.error(`Rhodonite failed to render scenario: ${
+            error?.stack ?? error}`);
+        // Lets the framework fail this scenario instead of waiting for it
+        this.dispatchEvent(new CustomEvent(
+            'model-error', {detail: {message: String(error?.message ?? error)}}));
+      });
     }
   }
 
   private async[$updateScenario](scenario: ScenarioConfig) {
-    // Rhodonite Initialization
-    await this.initRhodonite();
+    this[$canvas] = this.shadowRoot!.querySelector('canvas');
+    const canvas = this[$canvas]!;
 
-    const iblRotation = +180;
-
-    // Update Size
-    this[$updateSize]();
-
-    // create Frame and Expressions
-    const frame = new Rn.Frame();
-
-    // create FrameBuffers
-    const {
-      framebufferTargetOfGammaMsaa,
-      framebufferTargetOfGammaResolve,
-      framebufferTargetOfGammaResolveForReference
-    } =
-        createRenderTargets(
-            scenario.dimensions.width, scenario.dimensions.height);
-
-    // Load glTF Expression
-    const {
-      cameraComponent,
-      cameraEntity,
-      mainRenderPass,
-      modelTransparentExpression
-    } =
-        await loadGltf(
-            frame,
-            scenario,
-            framebufferTargetOfGammaMsaa,
-            framebufferTargetOfGammaResolve,
-            framebufferTargetOfGammaResolveForReference);
-
-    // setup IBL
-    const prefilterObj = await setupIBL(scenario, iblRotation);
-
-    if (Rn.Is.exist(prefilterObj)) {
-      setupBackgroundEnvCubeExpression(
-          frame,
-          prefilterObj,
-          framebufferTargetOfGammaMsaa,
-          mainRenderPass,
-          scenario,
-          iblRotation);
-    }
-
-    // MSAA Resolve Expression
-    setupMsaaResolveExpression(
-        frame,
-        framebufferTargetOfGammaMsaa,
-        framebufferTargetOfGammaResolve,
-        framebufferTargetOfGammaResolveForReference);
-
-    frame.addExpression(modelTransparentExpression);
-
-    // Post GammaCorrection Expression
-    setupGammaExpression(frame, framebufferTargetOfGammaResolve);
-
-    // setup camera
-    setupCamera(mainRenderPass, scenario, cameraEntity, cameraComponent);
-
-    // Draw
-    this.draw(frame);
-  }
-
-  private async initRhodonite() {
-    if (this[$isRhodoniteInitDone] === false) {
-      this[$canvas] = this.shadowRoot!.querySelector('canvas');
-      await Rn.System.init({
-        approach: Rn.ProcessApproach.UniformWebGL2,
-        canvas: this[$canvas] as HTMLCanvasElement,
+    if (this[$engine] == null) {
+      this[$engine] = await Rn.Engine.init({
+        approach: Rn.ProcessApproach.DataTexture,
+        canvas,
+        notToDisplayRnInfoAtInit: true,
       });
     }
-    Rn.MeshRendererComponent.isDepthMaskTrueForTransparencies = true;
-  }
+    const engine = this[$engine]!;
 
-  private draw(frame: Rn.Frame) {
-    requestAnimationFrame(() => {
-      function draw() {
-        Rn.System.process(frame);
-        requestAnimationFrame(draw);
+    const {width, height} = this[$updateSize]();
+
+    // Scenario paths are relative to the renderer page.
+    const resolveUrl = (url: string) => new URL(url, self.location.href).href;
+
+    const {cameraEntity, cameraComponent} = createCamera(engine, scenario);
+
+    const [mainExpression, environment] = await Promise.all([
+      Rn.GltfImporter.importFromUrl(engine, resolveUrl(scenario.model), {
+        cameraComponent,
+        defaultMaterialHelperArgumentArray: [{makeOutputSrgb: false}],
+      }),
+      loadEnvironment(engine, resolveUrl(scenario.lighting)),
+    ]);
+
+    const pipeline = new Rn.ForwardRenderPipeline(engine);
+    await pipeline.setup(width, height, {isBloom: false, isShadow: false});
+    pipeline.setToneMappingType(Rn.ToneMappingType.ACES_Hill_Exposure_Boost);
+
+    const expressions = [mainExpression];
+    if (scenario.renderSkybox) {
+      expressions.unshift(
+          createSkyboxExpression(engine, environment.cube, cameraEntity));
+    }
+    pipeline.setExpressions(expressions);
+    pipeline.setIBLTextures(
+        environment.diffuse as any,
+        environment.specular as any,
+        environment.sheen as any);
+
+    let frameCount = 0;
+    pipeline.startRenderLoop((frame: Rn.Frame) => {
+      engine.process(frame);
+      if (++frameCount === FRAMES_BEFORE_READY) {
+        this.dispatchEvent(
+            // This notifies the framework that the model is visible and the
+            // screenshot can be taken
+            new CustomEvent('model-visibility', {detail: {visible: true}}));
       }
-      draw();
-      this.dispatchEvent(
-          // This notifies the framework that the model is visible and the
-          // screenshot can be taken
-          new CustomEvent('model-visibility', {detail: {visible: true}}));
     });
   }
 
   private[$updateSize]() {
-    if (this[$canvas] == null || this.scenario == null) {
-      return;
-    }
-
+    const {dimensions} = this.scenario!;
     const canvas = this[$canvas]!;
-    const {dimensions} = this.scenario;
 
     const dpr = window.devicePixelRatio;
     const width = dimensions.width * dpr;
     const height = dimensions.height * dpr;
 
-    Rn.System.resizeCanvas(width, height);
-
+    this[$engine]!.resizeCanvas(width, height);
     canvas.style.width = `${dimensions.width}px`;
     canvas.style.height = `${dimensions.height}px`;
+
+    return {width, height};
   }
 }
 
-async function setupIBL(scenario: ScenarioConfig, rotation: number) {
-  const split = scenario.lighting.split('.');
-  const ext = split[split.length - 1];
-  if (ext === 'hdr') {
-    const prefilterObj = await prefilterFromUri(scenario.lighting);
-    setupPrefilteredIBLTexture(prefilterObj, rotation);
-    return prefilterObj;
-  }
-  return undefined;
-}
-
-function setupCamera(
-    mainRenderPass: any,
-    scenario: ScenarioConfig,
-    cameraEntity: any,
-    cameraComponent: any) {
-  const sceneTopLevelGraphComponents =
-      mainRenderPass.sceneTopLevelGraphComponents as Rn.SceneGraphComponent[];
-  const rootGroup =
-      sceneTopLevelGraphComponents![0].entity as Rn.ISceneGraphEntity;
-  const aabb = rootGroup.getSceneGraph().calcWorldAABB();
-
-  Rn.MeshRendererComponent.isViewFrustumCullingEnabled = false;
-  const {target, orbit} = scenario!;
+function createCamera(engine: Rn.Engine, scenario: ScenarioConfig) {
+  const {target, orbit, verticalFoV, dimensions} = scenario;
 
   const center = [target.x, target.y, target.z];
 
-  const theta = (orbit.theta) * Math.PI / 180;
-  const phi = (orbit.phi) * Math.PI / 180;
+  const theta = orbit.theta * Math.PI / 180;
+  const phi = orbit.phi * Math.PI / 180;
   const radiusSinPhi = orbit.radius * Math.sin(phi);
   const eye = [
     radiusSinPhi * Math.sin(theta) + target.x,
@@ -188,521 +137,278 @@ function setupCamera(
     center[1] = eye[1] - Math.cos(phi);
     center[2] = eye[2] - Math.sin(phi) * Math.cos(theta);
   }
-  const up = [0, 1, 0];
 
-  cameraEntity.getCamera().eyeInner = Rn.Vector3.fromCopyArray3(eye);
-  cameraEntity.getCamera().up = Rn.Vector3.fromCopyArray3(up);
-  cameraEntity.getCamera().directionInner = Rn.Vector3.fromCopyArray3(center);
-  cameraEntity.getCamera().primitiveMode = true;
+  const cameraEntity = Rn.createCameraEntity(engine, true);
+  const cameraComponent = cameraEntity.getCamera();
 
-  const modelRadius = aabb.lengthCenterToCorner;
-  // const max = aabb.maxPoint;
-  // const min = aabb.minPoint;
-  // const modelRadius = Math.max(max.x - min.x, max.y - min.y, max.z - min.z);
-  const far = 6 * Math.max(modelRadius, orbit.radius);
-  const near = far / 100;
-  cameraComponent.zNearInner = near;
-  cameraComponent.zFarInner = far;
+  // The camera looks from its local origin towards `direction`, so place the
+  // entity at the eye and aim it at the target.
+  cameraEntity.getTransform().localPosition =
+      Rn.Vector3.fromCopyArray3(eye as [number, number, number]);
+  cameraComponent.up = Rn.Vector3.fromCopy3(0, 1, 0);
+  cameraComponent.direction = Rn.Vector3.normalize(Rn.Vector3.fromCopy3(
+      center[0] - eye[0], center[1] - eye[1], center[2] - eye[2]));
+
+  const far = 2 * Math.max(orbit.radius, 1e-3) * 10;
+  cameraComponent.zNear = far / 1000;
+  cameraComponent.zFar = far;
+  cameraComponent.setFovyAndChangeFocalLength(verticalFoV);
+  cameraComponent.aspect = dimensions.width / dimensions.height;
+
+  return {cameraEntity, cameraComponent};
 }
 
-async function loadGltf(
-    frame: Rn.Frame,
-    scenario: ScenarioConfig,
-    framebufferTargetOfGammaMsaa: Rn.FrameBuffer,
-    framebufferTargetOfGammaResolve: Rn.FrameBuffer,
-    framebufferTargetOfGammaResolveForReference: Rn.FrameBuffer) {
-  const initialExpression =
-      setupInitialExpression(framebufferTargetOfGammaMsaa);
-  frame.addExpression(initialExpression);
+interface Environment {
+  cube: Rn.RenderTargetTextureCube;
+  diffuse: Rn.RenderTargetTextureCube;
+  specular: Rn.RenderTargetTextureCube;
+  sheen: Rn.RenderTargetTextureCube;
+}
 
-  // camera
-  const cameraEntity = Rn.EntityHelper.createCameraEntity();
-  const cameraComponent = cameraEntity.getCamera();
-  cameraComponent.fovyInner = scenario.verticalFoV;
-  cameraComponent.aspectInner =
-      scenario.dimensions.width / scenario.dimensions.height;
+/**
+ * Loads an equirectangular environment (Radiance .hdr or an 8-bit image),
+ * converts it to a cube map and prefilters the diffuse, specular and sheen
+ * IBL maps on the GPU.
+ */
+async function loadEnvironment(
+    engine: Rn.Engine, url: string): Promise<Environment> {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Failed to load environment ${url}: ${response.status}`);
+  }
+  const image = url.toLowerCase().endsWith('.hdr') ?
+      parseHdr(new Uint8Array(await response.arrayBuffer())) :
+      await decodeLdr(await response.blob());
 
-  // gltf
-  const modelOpaqueExpression = await Rn.GltfImporter.import(scenario.model, {
-    cameraComponent: cameraComponent,
-    defaultMaterialHelperArgumentArray: [
-      {
-        makeOutputSrgb: false,
-      },
-    ],
+  const panorama = new Rn.Texture(engine);
+  panorama.allocate({
+    width: image.width,
+    height: image.height,
+    format: Rn.TextureFormat.RGBA32F,
   });
-  const modelOpaquePass = modelOpaqueExpression.renderPasses[0];
-  modelOpaquePass.tryToSetUniqueName('modelOpaque', true);
-  modelOpaquePass.cameraComponent = cameraComponent;
-  Rn.CameraComponent.current = cameraComponent.componentSID;
+  await panorama.loadImageToMipLevel({
+    mipLevel: 0,
+    xOffset: 0,
+    yOffset: 0,
+    width: image.width,
+    height: image.height,
+    rowSizeByPixel: image.width,
+    data: image.data,
+    type: Rn.ComponentType.Float,
+  });
 
-  modelOpaquePass.setFramebuffer(framebufferTargetOfGammaMsaa);
-  modelOpaquePass.toClearColorBuffer = false;
-  modelOpaquePass.toClearDepthBuffer = false;
-  modelOpaquePass.toRenderOpaquePrimitives = true;
-  modelOpaquePass.toRenderTransparentPrimitives = false;
+  const createCube = (mipLevelCount?: number) =>
+      Rn.RenderableHelper.createFrameBufferCubeMap(engine, {
+        width: CUBE_MAP_SIZE,
+        height: CUBE_MAP_SIZE,
+        textureFormat: Rn.TextureFormat.RGBA32F,
+        mipLevelCount,
+      });
 
-  // Transparent
-  const modelTransparentExpression = modelOpaqueExpression.clone();
-  modelTransparentExpression.tryToSetUniqueName('modelTransparent', true);
-  const renderPassMainTranslucent = modelTransparentExpression.renderPasses[0];
-  renderPassMainTranslucent.toRenderOpaquePrimitives = false;
-  renderPassMainTranslucent.toRenderTransparentPrimitives = true;
-  renderPassMainTranslucent.toClearDepthBuffer = false;
-  renderPassMainTranslucent.setFramebuffer(framebufferTargetOfGammaMsaa);
-  renderPassMainTranslucent.setResolveFramebuffer(
-      framebufferTargetOfGammaResolve);
-  for (const entity of renderPassMainTranslucent.entities) {
-    const meshComponent = entity.tryToGetMesh();
-    if (Rn.Is.exist(meshComponent)) {
-      const mesh = meshComponent.mesh;
-      if (Rn.Is.exist(mesh)) {
-        for (const primitive of mesh.primitives) {
-          primitive.material.setTextureParameter(
-              Rn.ShaderSemantics.BackBufferTexture,
-              framebufferTargetOfGammaResolveForReference
-                  .getColorAttachedRenderTargetTexture(0));
-        }
+  // Equirectangular panorama -> cube map
+  const panoramaToCubeMaterial =
+      Rn.MaterialHelper.createPanoramaToCubeMaterial(engine);
+  const panoramaToCubeRenderPass =
+      Rn.RenderPassHelper.createScreenDrawRenderPassWithBaseColorTexture(
+          engine, panoramaToCubeMaterial, panorama);
+  const [cubeFramebuffer, cube] = createCube();
+  panoramaToCubeRenderPass.toClearColorBuffer = false;
+  panoramaToCubeRenderPass.toClearDepthBuffer = false;
+  panoramaToCubeRenderPass.isDepthTest = false;
+  panoramaToCubeRenderPass.setFramebuffer(cubeFramebuffer);
+  const panoramaToCubeExpression = new Rn.Expression();
+  panoramaToCubeExpression.addRenderPasses([panoramaToCubeRenderPass]);
+
+  for (let face = 0; face < 6; face++) {
+    panoramaToCubeMaterial.setParameter('cubeMapFaceId', face);
+    cubeFramebuffer.setColorAttachmentCubeAt(0, face, 0, cube);
+    engine.process([panoramaToCubeExpression]);
+  }
+  cube.generateMipmaps();
+
+  // Cube map -> prefiltered IBL maps
+  const sampler = new Rn.Sampler(engine, {
+    magFilter: Rn.TextureParameter.Linear,
+    minFilter: Rn.TextureParameter.LinearMipmapLinear,
+    wrapS: Rn.TextureParameter.ClampToEdge,
+    wrapT: Rn.TextureParameter.ClampToEdge,
+    wrapR: Rn.TextureParameter.ClampToEdge,
+  });
+  sampler.create();
+  const prefilterMaterial = Rn.MaterialHelper.createPrefilterIBLMaterial(engine);
+  const prefilterRenderPass =
+      Rn.RenderPassHelper.createScreenDrawRenderPassWithBaseColorTexture(
+          engine, prefilterMaterial, cube, sampler);
+  prefilterRenderPass.toClearColorBuffer = false;
+  prefilterRenderPass.toClearDepthBuffer = false;
+  prefilterRenderPass.isDepthTest = false;
+  const prefilterExpression = new Rn.Expression();
+  prefilterExpression.addRenderPasses([prefilterRenderPass]);
+
+  // distributionType: 0 = Lambertian, 1 = GGX, 2 = Charlie (sheen)
+  const prefilter = (distributionType: number, mipLevelCount: number) => {
+    const [framebuffer, target] = createCube(mipLevelCount);
+    prefilterRenderPass.setFramebuffer(framebuffer);
+    prefilterMaterial.setParameter('distributionType', distributionType);
+    for (let mip = 0; mip < mipLevelCount; mip++) {
+      const roughness = mipLevelCount > 1 ? mip / (mipLevelCount - 1) : 0;
+      prefilterMaterial.setParameter('roughness', roughness);
+      prefilterRenderPass.setViewport(Rn.Vector4.fromCopy4(
+          0, 0, CUBE_MAP_SIZE >> mip, CUBE_MAP_SIZE >> mip));
+      for (let face = 0; face < 6; face++) {
+        prefilterMaterial.setParameter('cubeMapFaceId', face);
+        framebuffer.setColorAttachmentCubeAt(0, face, mip, target);
+        engine.process([prefilterExpression]);
       }
     }
-  }
+    target.setIsTextureReady();
+    return target;
+  };
 
-  frame.addExpression(modelOpaqueExpression);
-
+  const fullMipChain = Math.floor(Math.log2(CUBE_MAP_SIZE)) + 1;
   return {
-    cameraComponent,
-    cameraEntity,
-    mainRenderPass: modelOpaquePass,
-    modelTransparentExpression
+    cube,
+    diffuse: prefilter(0, 1),
+    specular: prefilter(1, fullMipChain),
+    sheen: prefilter(2, fullMipChain),
   };
 }
 
-function setupGammaExpression(
-    frame: Rn.Frame, gammaTargetFramebuffer: Rn.FrameBuffer) {
-  const expressionGammaEffect = new Rn.Expression();
+function createSkyboxExpression(
+    engine: Rn.Engine,
+    cube: Rn.RenderTargetTextureCube,
+    cameraEntity: Rn.ICameraEntity) {
+  const material = Rn.MaterialHelper.createEnvConstantMaterial(engine);
+  const sampler = new Rn.Sampler(engine, {
+    wrapS: Rn.TextureParameter.ClampToEdge,
+    wrapT: Rn.TextureParameter.ClampToEdge,
+    minFilter: Rn.TextureParameter.Linear,
+    magFilter: Rn.TextureParameter.Linear,
+  });
+  material.setTextureParameter('colorEnvTexture', cube as any, sampler);
+  material.setParameter('envHdriFormat', Rn.HdriFormat.HDR_LINEAR.index);
+  material.setParameter('makeOutputSrgb', 0);
 
-  // gamma correction (and super sampling)
-  const postEffectCameraEntity = createPostEffectCameraEntity();
-  const postEffectCameraComponent = postEffectCameraEntity.getCamera();
+  const sphere = new Rn.Sphere(engine);
+  const camera = cameraEntity.getCamera();
+  sphere.generate({
+    radius: camera.zFar * 0.9,
+    widthSegments: 40,
+    heightSegments: 40,
+    material,
+  });
+  const mesh = new Rn.Mesh(engine);
+  mesh.addPrimitive(sphere);
 
-  const gammaCorrectionMaterial =
-      Rn.MaterialHelper.createGammaCorrectionMaterial();
-  // gammaCorrectionMaterial.setParameter(Rn.ShaderSemantics.EnableLinearToSrgb,
-  // Rn.Scalar.fromCopyNumber(0));
-  const gammaCorrectionRenderPass = createPostEffectRenderPass(
-      gammaCorrectionMaterial, postEffectCameraComponent);
+  const sphereEntity = Rn.createMeshEntity(engine);
+  sphereEntity.getTransform().localScale = Rn.Vector3.fromCopyArray([-1, 1, 1]);
+  sphereEntity.getTransform().localPosition =
+      cameraEntity.getTransform().localPosition;
+  sphereEntity.getMesh().setMesh(mesh);
 
-  setTextureParameterForMeshComponents(
-      gammaCorrectionRenderPass.meshComponents!,
-      Rn.ShaderSemantics.BaseColorTexture,
-      gammaTargetFramebuffer.getColorAttachedRenderTargetTexture(0));
+  const renderPass = new Rn.RenderPass(engine);
+  renderPass.addEntities([sphereEntity]);
+  renderPass.cameraComponent = camera;
 
-  expressionGammaEffect.addRenderPasses([gammaCorrectionRenderPass]);
-
-  frame.addExpression(expressionGammaEffect);
-}
-
-function setupInitialExpression(framebufferTargetOfGammaMsaa: Rn.FrameBuffer) {
   const expression = new Rn.Expression();
-  expression.tryToSetUniqueName('Initial', true);
-  const initialRenderPass = new Rn.RenderPass();
-  initialRenderPass.clearColor =
-      Rn.Vector4.fromCopyArray4([0.0, 0.0, 0.0, 0.0]);
-  initialRenderPass.toClearColorBuffer = false;
-  initialRenderPass.toClearDepthBuffer = true;
-  const initialRenderPassForFrameBuffer = new Rn.RenderPass();
-  initialRenderPassForFrameBuffer.clearColor =
-      Rn.Vector4.fromCopyArray4([0.0, 0.0, 0.0, 0.0]);
-  initialRenderPassForFrameBuffer.toClearColorBuffer = true;
-  initialRenderPassForFrameBuffer.toClearDepthBuffer = true;
-  initialRenderPassForFrameBuffer.setFramebuffer(framebufferTargetOfGammaMsaa)
-  expression.addRenderPasses(
-      [initialRenderPass, initialRenderPassForFrameBuffer]);
+  expression.addRenderPasses([renderPass]);
   return expression;
 }
 
-function setupMsaaResolveExpression(
-    frame: Rn.Frame,
-    framebufferTargetOfGammaMsaa: Rn.FrameBuffer,
-    framebufferTargetOfGammaResolve: Rn.FrameBuffer,
-    framebufferTargetOfGammaResolveForReference: Rn.FrameBuffer) {
-  const expressionForResolve = new Rn.Expression()
-  expressionForResolve.tryToSetUniqueName('Resolve', true)
-  const renderPassForResolve = new Rn.RenderPass()
-  expressionForResolve.addRenderPasses([renderPassForResolve])
-
-  renderPassForResolve.toClearDepthBuffer = false
-  renderPassForResolve.setFramebuffer(framebufferTargetOfGammaMsaa)
-  renderPassForResolve.setResolveFramebuffer(framebufferTargetOfGammaResolve)
-  renderPassForResolve.setResolveFramebuffer2(
-      framebufferTargetOfGammaResolveForReference)
-  // getRnAppModel().setResolveExpression(expressionForResolve.objectUID)
-
-  frame.addExpression(expressionForResolve);
-
-  return expressionForResolve;
+interface FloatImage {
+  width: number;
+  height: number;
+  data: Float32Array;  // RGBA, linear
 }
 
-function createRenderTargets(canvasWidth: number, canvasHeight: number) {
-  // MSAA depth
-  const framebufferTargetOfGammaMsaa =
-      Rn.RenderableHelper.createTexturesForRenderTarget(
-          canvasWidth, canvasHeight, 0, {
-            isMSAA: true,
-            sampleCountMSAA: 4,
-          });
-  framebufferTargetOfGammaMsaa.tryToSetUniqueName(
-      'FramebufferTargetOfGammaMsaa', true);
-
-  // Resolve Color 1
-  const framebufferTargetOfGammaResolve =
-      Rn.RenderableHelper.createTexturesForRenderTarget(
-          canvasWidth, canvasHeight, 1, {
-            createDepthBuffer: true,
-          });
-  framebufferTargetOfGammaResolve.tryToSetUniqueName(
-      'FramebufferTargetOfGammaResolve', true);
-
-  // Resolve Color 2
-  const framebufferTargetOfGammaResolveForReference =
-      Rn.RenderableHelper.createTexturesForRenderTarget(
-          canvasWidth, canvasHeight, 1, {
-            createDepthBuffer: false,
-            minFilter: Rn.TextureParameter.LinearMipmapLinear
-          });
-  framebufferTargetOfGammaResolveForReference.tryToSetUniqueName(
-      'FramebufferTargetOfGammaResolveForReference', true);
-  return {
-    framebufferTargetOfGammaMsaa,
-    framebufferTargetOfGammaResolve,
-    framebufferTargetOfGammaResolveForReference
+/** Decodes a Radiance RGBE (.hdr) file, including RLE scanlines. */
+function parseHdr(bytes: Uint8Array): FloatImage {
+  let pos = 0;
+  const readLine = () => {
+    let line = '';
+    while (pos < bytes.length && bytes[pos] !== 0x0a) {
+      line += String.fromCharCode(bytes[pos++]);
+    }
+    pos++;
+    return line;
   };
-}
 
-function createPostEffectRenderPass(
-    material: Rn.Material, cameraComponent: Rn.CameraComponent) {
-  const boardPrimitive = new Rn.Plane();
-  boardPrimitive.generate({
-    width: 1,
-    height: 1,
-    uSpan: 1,
-    vSpan: 1,
-    isUVRepeat: false,
-    material,
-  });
-
-  const boardMesh = new Rn.Mesh();
-  boardMesh.addPrimitive(boardPrimitive);
-
-  const boardEntity = Rn.EntityHelper.createMeshEntity();
-  boardEntity.getTransform().rotate = Rn.Vector3.fromCopyArray([
-    Math.PI / 2,
-    0.0,
-    0.0,
-  ]);
-  boardEntity.getTransform().translate = Rn.Vector3.fromCopyArray([
-    0.0,
-    0.0,
-    -0.5,
-  ]);
-  const boardMeshComponent = boardEntity.getMesh();
-  boardMeshComponent.setMesh(boardMesh);
-
-  const renderPass = new Rn.RenderPass();
-  renderPass.toClearColorBuffer = false;
-  renderPass.cameraComponent = cameraComponent;
-  renderPass.addEntities([boardEntity]);
-
-  return renderPass;
-}
-
-
-function createPostEffectCameraEntity() {
-  const cameraEntity = Rn.EntityHelper.createCameraEntity();
-  const cameraComponent = cameraEntity.getCamera();
-  cameraComponent.zNearInner = 0.5;
-  cameraComponent.zFarInner = 2.0;
-  return cameraEntity;
-}
-
-function setTextureParameterForMeshComponents(
-    meshComponents: Rn.MeshComponent[],
-    shaderSemantic: Rn.ShaderSemanticsEnum,
-    value: any) {
-  for (let i = 0; i < meshComponents.length; i++) {
-    const mesh = meshComponents[i].mesh;
-    if (!mesh)
-      continue;
-
-    const primitiveNumber = mesh.getPrimitiveNumber();
-    for (let j = 0; j < primitiveNumber; j++) {
-      const primitive = mesh.getPrimitiveAt(j);
-      primitive.material.setTextureParameter(shaderSemantic, value);
+  if (!readLine().startsWith('#?')) {
+    throw new Error('Not a Radiance HDR file');
+  }
+  for (let line = readLine(); line !== ''; line = readLine()) {
+    if (line.startsWith('FORMAT=') && line !== 'FORMAT=32-bit_rle_rgbe') {
+      throw new Error(`Unsupported HDR format: ${line}`);
     }
   }
-}
-declare const wasm_bindgen: any;
-let initPrefilteringWasmPromise: Promise<unknown>;
-let glPrefiltering: WebGLRenderingContext;
-
-function initPrefilteringWasm() {
-  return new Promise(resolve => {
-           if (initPrefilteringWasmPromise != null) {
-             // already initialized
-             initPrefilteringWasmPromise.then(() => {
-               resolve();
-             });
-           }
-
-           const uri =
-               'https://storage.googleapis.com/emadurandal-3d-public.appspot.com/rhodonite/vendor/ibl_prefiltering_wasm_bg.wasm'
-
-           initPrefilteringWasmPromise = wasm_bindgen(uri).then(() => {
-             const canvas =
-                 document.createElement('canvas') as HTMLCanvasElement
-             glPrefiltering =
-                 canvas.getContext('webgl') as WebGLRenderingContext
-             const {init_webgl_extensions} = wasm_bindgen
-             init_webgl_extensions(glPrefiltering)
-
-             resolve();
-           }) as Promise<void>
-         }) as Promise<void>;
-}
-
-async function prefilterFromUri(hdrFileUri: string) {
-  await initPrefilteringWasm()
-
-  const {request_binary, CubeMapPrefilter} = wasm_bindgen
-
-  const cubeMapSize = 512
-  const irradianceCubeMapSize = 32
-  const pmremCubeMapSize = 128
-  const pmremCubeMapMipCount = 8
-  const brdfLutSize = 512
-  const sample_count = 1024;
-  const prefilter = new CubeMapPrefilter(
-      glPrefiltering,
-      cubeMapSize,
-      irradianceCubeMapSize,
-      pmremCubeMapSize,
-      pmremCubeMapMipCount,
-      brdfLutSize,
-      sample_count)
-
-  const hdrImageData = await request_binary(hdrFileUri)
-  prefilter.load_hdr_image(glPrefiltering, hdrImageData)
-  prefilter.process(glPrefiltering)
-
-  return prefilter
-}
-
-function setupPrefilteredIBLTexture(prefilter: any, rotation: number) {
-  const specularCubeTexture = new Rn.CubeTexture()
-  const specularTextureTypedArrayImages =
-      getSpecularCubeTextureTypedArrays(prefilter)
-  specularCubeTexture.mipmapLevelNumber = specularTextureTypedArrayImages.length
-  const specularTextureSize = getSpecularCubeTextureSize(prefilter, 0)
-  specularCubeTexture.generateTextureFromTypedArrays(
-      specularTextureTypedArrayImages, specularTextureSize, specularTextureSize)
-  specularCubeTexture.hdriFormat = Rn.HdriFormat.RGBE_PNG
-
-  const diffuseCubeTexture = new Rn.CubeTexture()
-  const diffuseTextureTypedArrayImages =
-      getDiffuseCubeTextureTypedArrays(prefilter)
-  const diffuseTextureSize = getDiffuseCubeTextureSize(prefilter)
-  diffuseCubeTexture.generateTextureFromTypedArrays(
-      diffuseTextureTypedArrayImages, diffuseTextureSize, diffuseTextureSize)
-  diffuseCubeTexture.hdriFormat = Rn.HdriFormat.RGBE_PNG;
-
-  attachIBLTextureToAllMeshComponents(
-      diffuseCubeTexture, specularCubeTexture, rotation);
-
-  return [diffuseCubeTexture, specularCubeTexture];
-}
-
-function getSpecularCubeTextureTypedArrays(prefilter: any) {
-  const specularTextureTypedArrays = [];
-  const mipCount = prefilter.pmrem_cubemap_mip_count();
-
-  for (let mipLevel = 0; mipLevel < mipCount; mipLevel++) {
-    specularTextureTypedArrays.push({
-      posX: prefilter.pmrem_cubemap_texture_to_arrybuffer(
-          glPrefiltering, glPrefiltering.TEXTURE_CUBE_MAP_POSITIVE_X, mipLevel),
-      negX: prefilter.pmrem_cubemap_texture_to_arrybuffer(
-          glPrefiltering, glPrefiltering.TEXTURE_CUBE_MAP_NEGATIVE_X, mipLevel),
-      posY: prefilter.pmrem_cubemap_texture_to_arrybuffer(
-          glPrefiltering, glPrefiltering.TEXTURE_CUBE_MAP_POSITIVE_Y, mipLevel),
-      negY: prefilter.pmrem_cubemap_texture_to_arrybuffer(
-          glPrefiltering, glPrefiltering.TEXTURE_CUBE_MAP_NEGATIVE_Y, mipLevel),
-      posZ: prefilter.pmrem_cubemap_texture_to_arrybuffer(
-          glPrefiltering, glPrefiltering.TEXTURE_CUBE_MAP_POSITIVE_Z, mipLevel),
-      negZ: prefilter.pmrem_cubemap_texture_to_arrybuffer(
-          glPrefiltering, glPrefiltering.TEXTURE_CUBE_MAP_NEGATIVE_Z, mipLevel)
-    });
+  const resolution = readLine().match(/^-Y (\d+) \+X (\d+)$/);
+  if (resolution == null) {
+    throw new Error('Unsupported HDR orientation');
   }
+  const height = parseInt(resolution[1]);
+  const width = parseInt(resolution[2]);
 
-  return specularTextureTypedArrays;
-}
-
-function getDiffuseCubeTextureTypedArrays(prefilter: any) {
-  return [{
-    posX: prefilter.irradiance_cubemap_texture_to_arrybuffer(
-        glPrefiltering, glPrefiltering.TEXTURE_CUBE_MAP_POSITIVE_X),
-    negX: prefilter.irradiance_cubemap_texture_to_arrybuffer(
-        glPrefiltering, glPrefiltering.TEXTURE_CUBE_MAP_NEGATIVE_X),
-    posY: prefilter.irradiance_cubemap_texture_to_arrybuffer(
-        glPrefiltering, glPrefiltering.TEXTURE_CUBE_MAP_POSITIVE_Y),
-    negY: prefilter.irradiance_cubemap_texture_to_arrybuffer(
-        glPrefiltering, glPrefiltering.TEXTURE_CUBE_MAP_NEGATIVE_Y),
-    posZ: prefilter.irradiance_cubemap_texture_to_arrybuffer(
-        glPrefiltering, glPrefiltering.TEXTURE_CUBE_MAP_POSITIVE_Z),
-    negZ: prefilter.irradiance_cubemap_texture_to_arrybuffer(
-        glPrefiltering, glPrefiltering.TEXTURE_CUBE_MAP_NEGATIVE_Z)
-  }]
-}
-
-export function getEnvCubeTextureSize(prefilter: any) {
-  return prefilter.hdr_cubemap_texture_size()
-}
-
-export function getDiffuseCubeTextureSize(prefilter: any) {
-  return prefilter.irradiance_cubemap_texture_size()
-}
-
-export function getSpecularCubeTextureSize(prefilter: any, mipLevel: number) {
-  return prefilter.pmrem_cubemap_texture_size(mipLevel)
-}
-
-function attachIBLTextureToAllMeshComponents(
-    diffuseCubeTexture: Rn.CubeTexture,
-    specularCubeTexture: Rn.CubeTexture,
-    rotation: number) {
-  const meshRendererComponents =
-      Rn.ComponentRepository.getComponentsWithType(Rn.MeshRendererComponent) as
-      Rn.MeshRendererComponent[];
-  for (let i = 0; i < meshRendererComponents.length; i++) {
-    const meshRendererComponent = meshRendererComponents[i];
-    meshRendererComponent.specularCubeMap = specularCubeTexture;
-    meshRendererComponent.diffuseCubeMap = diffuseCubeTexture;
-    meshRendererComponent.diffuseCubeMapContribution = 0.5;
-    meshRendererComponent.specularCubeMapContribution = 0.5;
-    meshRendererComponent.rotationOfCubeMap =
-        Rn.MathUtil.degreeToRadian(rotation)
-  }
-  const meshComponents = Rn.ComponentRepository.getComponentsWithType(
-                             Rn.MeshComponent) as Rn.MeshComponent[];
-  for (let i = 0; i < meshComponents.length; i++) {
-    const meshComponent = meshComponents[i];
-    const mesh = meshComponent.mesh;
-    if (Rn.Is.exist(mesh)) {
-      for (let i = 0; i < mesh.getPrimitiveNumber(); i++) {
-        const primitive = mesh.getPrimitiveAt(i);
-        primitive.material.setParameter(
-            Rn.ShaderSemantics.InverseEnvironment, Rn.Scalar.fromCopyNumber(0));
+  const data = new Float32Array(width * height * 4);
+  const scanline = new Uint8Array(width * 4);
+  for (let y = 0; y < height; y++) {
+    const isRle = width >= 8 && width < 0x8000 && bytes[pos] === 2 &&
+        bytes[pos + 1] === 2 && !(bytes[pos + 2] & 0x80);
+    if (isRle) {
+      pos += 4;
+      for (let channel = 0; channel < 4; channel++) {
+        for (let x = 0; x < width;) {
+          let count = bytes[pos++];
+          if (count > 128) {
+            count -= 128;
+            const value = bytes[pos++];
+            for (let i = 0; i < count; i++) {
+              scanline[(x++) * 4 + channel] = value;
+            }
+          } else {
+            for (let i = 0; i < count; i++) {
+              scanline[(x++) * 4 + channel] = bytes[pos++];
+            }
+          }
+        }
       }
+    } else {
+      scanline.set(bytes.subarray(pos, pos + width * 4));
+      pos += width * 4;
+    }
+
+    for (let x = 0; x < width; x++) {
+      const e = scanline[x * 4 + 3];
+      const scale = e === 0 ? 0 : Math.pow(2, e - 136);
+      const i = (y * width + x) * 4;
+      data[i] = scanline[x * 4] * scale;
+      data[i + 1] = scanline[x * 4 + 1] * scale;
+      data[i + 2] = scanline[x * 4 + 2] * scale;
+      data[i + 3] = 1;
     }
   }
+
+  return {width, height, data};
 }
 
-function getEnvCubeTextureTypedArrays(prefilter: any) {
-  return [{
-    posX: prefilter.hdr_cubemap_texture_to_arrybuffer(
-        glPrefiltering, glPrefiltering.TEXTURE_CUBE_MAP_POSITIVE_X),
-    negX: prefilter.hdr_cubemap_texture_to_arrybuffer(
-        glPrefiltering, glPrefiltering.TEXTURE_CUBE_MAP_NEGATIVE_X),
-    posY: prefilter.hdr_cubemap_texture_to_arrybuffer(
-        glPrefiltering, glPrefiltering.TEXTURE_CUBE_MAP_POSITIVE_Y),
-    negY: prefilter.hdr_cubemap_texture_to_arrybuffer(
-        glPrefiltering, glPrefiltering.TEXTURE_CUBE_MAP_NEGATIVE_Y),
-    posZ: prefilter.hdr_cubemap_texture_to_arrybuffer(
-        glPrefiltering, glPrefiltering.TEXTURE_CUBE_MAP_POSITIVE_Z),
-    negZ: prefilter.hdr_cubemap_texture_to_arrybuffer(
-        glPrefiltering, glPrefiltering.TEXTURE_CUBE_MAP_NEGATIVE_Z)
-  }]
-}
+/** Decodes an 8-bit sRGB image into linear float RGBA. */
+async function decodeLdr(blob: Blob): Promise<FloatImage> {
+  const bitmap = await createImageBitmap(blob);
+  const {width, height} = bitmap;
+  const canvas = new OffscreenCanvas(width, height);
+  const context = canvas.getContext('2d')!;
+  context.drawImage(bitmap, 0, 0);
+  const pixels = context.getImageData(0, 0, width, height).data;
 
-function setPrefilteredEnvCubeTexture(
-    cubeTexture: Rn.CubeTexture,
-    sphereMaterial: Rn.Material,
-    prefilter: unknown) {
-  const envCubeTextureTypedArrayImages = getEnvCubeTextureTypedArrays(prefilter)
-  const envCubeTextureSize = getEnvCubeTextureSize(prefilter)
-
-  cubeTexture.generateTextureFromTypedArrays(
-      envCubeTextureTypedArrayImages, envCubeTextureSize, envCubeTextureSize)
-  cubeTexture.hdriFormat = Rn.HdriFormat.RGBE_PNG
-  sphereMaterial.setParameter(
-      Rn.ShaderSemantics.EnvHdriFormat, Rn.HdriFormat.RGBE_PNG.index)
-}
-
-function setupBackgroundEnvCubeExpression(
-    frame: Rn.Frame,
-    prefilter: any,
-    framebufferTargetOfGammaMsaa: Rn.FrameBuffer,
-    mainRenderPass: Rn.RenderPass,
-    scenario: ScenarioConfig,
-    rotation: number) {
-  // create sphere
-  const sphereEntity = Rn.EntityHelper.createMeshEntity()
-  sphereEntity.tryToSetUniqueName('Sphere Env Cube', true)
-  sphereEntity.tryToSetTag({
-    tag: 'type',
-    value: 'background-assets',
-  })
-  const spherePrimitive = new Rn.Sphere()
-  const sphereMaterial = Rn.MaterialHelper.createEnvConstantMaterial();
-  sphereMaterial.setParameter(Rn.ShaderSemantics.MakeOutputSrgb, 0);
-  sphereMaterial.setParameter(
-      Rn.ShaderSemantics.envRotation, Rn.MathUtil.degreeToRadian(rotation));
-  sphereMaterial.setParameter(
-      Rn.ShaderSemantics.InverseEnvironment, Rn.Scalar.fromCopyNumber(0));
-
-  // environment Cube Texture
-  const environmentCubeTexture = new Rn.CubeTexture()
-  setPrefilteredEnvCubeTexture(
-      environmentCubeTexture, sphereMaterial, prefilter)
-  sphereMaterial.setTextureParameter(
-      Rn.ShaderSemantics.ColorEnvTexture, environmentCubeTexture)
-
-  // setup sphere
-  const sceneTopLevelGraphComponents =
-      mainRenderPass.sceneTopLevelGraphComponents as Rn.SceneGraphComponent[];
-  const rootGroup =
-      sceneTopLevelGraphComponents![0].entity as Rn.ISceneGraphEntity;
-  const aabb = rootGroup.getSceneGraph().calcWorldAABB();
-  spherePrimitive.generate({
-    radius: aabb.lengthCenterToCorner * 6.0,
-    widthSegments: 40,
-    heightSegments: 40,
-    material: sphereMaterial
-  })
-  const sphereMeshComponent =
-      sphereEntity.getComponent(Rn.MeshComponent) as Rn.MeshComponent
-  const sphereMesh = new Rn.Mesh()
-  sphereMesh.addPrimitive(spherePrimitive)
-  sphereMeshComponent.setMesh(sphereMesh)
-  sphereEntity.translate = Rn.Vector3.fromCopy3(
-      scenario.target.x, scenario.target.y, scenario.target.z);
-  sphereEntity.scale = Rn.Vector3.fromCopyArray3([-1, 1, 1])
-  if (!scenario.renderSkybox) {
-    sphereEntity.getSceneGraph().isVisible = false
+  const toLinear = (c: number) => {
+    c /= 255;
+    return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  };
+  const data = new Float32Array(width * height * 4);
+  for (let i = 0; i < pixels.length; i += 4) {
+    data[i] = toLinear(pixels[i]);
+    data[i + 1] = toLinear(pixels[i + 1]);
+    data[i + 2] = toLinear(pixels[i + 2]);
+    data[i + 3] = 1;
   }
-
-  const renderPass = new Rn.RenderPass()
-  renderPass.clearColor = Rn.Vector4.fromCopyArray4([0, 0, 0, 0])
-  renderPass.addEntities([sphereEntity])
-  // renderPass.cameraComponent = cameraComponent
-  renderPass.toClearDepthBuffer = false
-  renderPass.isDepthTest = true
-  renderPass.toClearColorBuffer = false
-  renderPass.setFramebuffer(framebufferTargetOfGammaMsaa)
-
-  const expression = new Rn.Expression()
-  expression.tryToSetUniqueName('EnvCube', true);
-  expression.addRenderPasses([renderPass])
-
-  frame.addExpression(expression);
-  // frame;
-  return expression
+  return {width, height, data};
 }
