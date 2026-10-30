@@ -14,7 +14,6 @@
  */
 
 import './images-4-up.js';
-import '@polymer/paper-slider';
 
 import {html, LitElement} from 'lit';
 import {property} from 'lit/decorators.js';
@@ -349,12 +348,18 @@ images-4-up {
   justify-content: center;
   flex: 1 1 90px;
 
+  gap: 12px;
+
   color: #fff;
-  --primary-text-color: #fff;
-  --paper-slider-active-color: #fff;
-  --paper-slider-pin-color: #fff;
-  --paper-slider-knob-color: #fff;
-  --paper-slider-font-color: #444;
+}
+
+#controls input[type=range] {
+  width: 200px;
+  accent-color: #fff;
+}
+
+#controls output {
+  min-width: 2ch;
 }
 
 canvas {
@@ -378,13 +383,13 @@ canvas {
   </images-4-up>
   <div id="controls">
     <label id="threshold-label">Threshold</label>
-    <paper-slider
+    <input type="range"
         @change="${
         (event: Event) => this.threshold =
             parseInt((event.target as HTMLInputElement).value, 10)}"
         aria-labelledby="threshold-label"
-        min="0" max="10" step="1" pin snaps value="5" editable>
-    </paper-slider>
+        min="0" max="10" step="1" .value="${String(this.threshold)}">
+    <output>${this.threshold}</output>
   </div>
   <button class="exit" @click="${() => this.exitAnalysisView()}">Exit</button>
 </div>`
