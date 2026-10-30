@@ -3,24 +3,8 @@ import json
 import numpy as np
 import math
 import sys
-import subprocess
 import os
 from mathutils import Vector
-
-
-# Determine the path to Blender's Python executable
-blender_python_executable = sys.executable
-
-# Construct the pip command
-pip_command = [blender_python_executable, "-m", "pip", "install", "Pillow"]
-
-# Run the pip command to install Pillow
-try:
-    subprocess.check_call(pip_command)
-except subprocess.CalledProcessError as e:
-    print(f"Failed to install Pillow. Error: {e}")
-
-from PIL import Image
 
 
 def RRTAndODTFit(v: np.array):
@@ -65,8 +49,17 @@ def ACESFilmicToneMapping(img: np.array) -> np.array:
 
 
 def save_image(path, data):
-    image = Image.fromarray(data)
-    image.save(path, "PNG")
+    # data: uint8, shape (height, width, 3 or 4), first row = top of image
+    height, width, channels = data.shape
+    rgba = np.ones((height, width, 4), dtype=np.float32)
+    rgba[:, :, :channels] = data / 255.0
+    image = bpy.data.images.new("png_output", width, height, alpha=channels == 4)
+    # Blender stores pixels bottom row first
+    image.pixels.foreach_set(np.flipud(rgba).ravel())
+    image.filepath_raw = path
+    image.file_format = "PNG"
+    image.save()
+    bpy.data.images.remove(image)
 
 
 def bounding_sphere(objects):
@@ -127,7 +120,7 @@ def main():
           "outputFile": "../../../test/goldens/khronos-SheenChair/stellar-golden.png"
         }
     """
-    config = json.loads(sys.argv[6])
+    config = json.loads(sys.argv[sys.argv.index("--") + 1])
 
     scenario = config["scenario"]
     outpath = config["outputFile"]
@@ -179,6 +172,10 @@ def main():
     camera = bpy.context.object
     bpy.context.scene.camera = camera
 
+    # Blender uses a default start frame number of "1", so we set to '0'
+    bpy.context.scene.frame_start = 0
+    bpy.context.scene.frame_current = 0
+
     # Set the camera's field of view
     camera.data.lens_unit = "FOV"
     if aspect > 1:
@@ -220,7 +217,8 @@ def main():
     world = bpy.data.worlds.new("World")  # Create a new world
     bpy.context.scene.world = world
 
-    scn.world.use_nodes = True
+    if bpy.app.version < (5, 0, 0):  # always on (and deprecated) since 5.0
+        scn.world.use_nodes = True
     node_tree = bpy.data.worlds[scn.world.name].node_tree
     # clear existing nodes
     for node in node_tree.nodes:
