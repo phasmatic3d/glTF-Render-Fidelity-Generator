@@ -59,7 +59,7 @@ const args = [
   '--hdrfile', resolve(RENDERER_DIR, scenario.lighting),
   '--cameraString', cameraString,
   '--frames', '500',
-  '--ptMaxFrames', '500',
+  '--ptMaxSamples', '500',
   '--ptSamples', '1',
   '--ptAdaptiveSampling', '0',
   '--renderSystem', '0',
