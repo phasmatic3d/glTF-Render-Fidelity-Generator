@@ -13,6 +13,7 @@
  * limitations under the License.
  */
 
+import * as core from '@actions/core';
 import HTTPServer from 'http-server';
 import module from 'module';
 import {dirname, join, resolve} from 'path';
@@ -28,8 +29,6 @@ type CommandLineArgs = {
 
 
 const require = module.createRequire(import.meta.url);
-// actions/core can only be imported using commonJS's require here
-const core = require('@actions/core');
 
 import {ArtifactCreator} from '../artifact-creator.js';
 import {FIDELITY_TEST_THRESHOLD, toDecibel} from '../common.js';
@@ -49,13 +48,16 @@ async function main() {
               type: 'string',
               alias: 'r',
               description: 'Name of web-based renderer to test',
-              default: 'three',
+              default: 'gltf-sample-viewer',
               choices: [
                 'three',
                 'filament',
                 'babylon',
+                'rhodonite',
                 'gltf-sample-viewer',
-                'three-gpu-pathtracer'
+                'three-gpu-renderer',
+                'model-viewer',
+                'dspbr-pt'
               ]
             },
             'scenario': {
@@ -131,7 +133,7 @@ async function main() {
           numMatches++;
         }
       });
-      if (numMatches) {
+      if (!numMatches) {
         console.warn(`Requested scenario "${
             scenarioName}" does not match any names found in config`);
       }
@@ -215,7 +217,7 @@ async function main() {
     core.setFailed(error.message);
   } finally {
     server.close();
-    screenshotCreator.close();
+    await screenshotCreator.close();
   }
 }
 

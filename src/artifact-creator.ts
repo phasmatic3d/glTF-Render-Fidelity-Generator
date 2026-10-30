@@ -56,6 +56,15 @@ export class ArtifactCreator {
         renderer => ({...renderer, file: `${renderer.name}-golden.png`}));
   }
 
+  protected rendererGolden(renderer: string): GoldenConfig {
+    const golden = this.goldens.find(golden => golden.name === renderer);
+    if (golden == null) {
+      throw new Error(
+          `❌ Renderer "${renderer}" is not configured in the test config`);
+    }
+    return golden;
+  }
+
   async compareRenderers(scenario: ScenarioConfig, renderer: string) {
     const analysisResults: AnalysisResults = [];
     const {rootDirectory, outputDirectory, goldens} = this;
@@ -69,9 +78,9 @@ export class ArtifactCreator {
     console.log(
         `Start to compare ${renderer}'s golden with other renderers' goldens:`);
 
-    const rendererIndex = 0;
-    const rendererGoldenPath = join(
-        rootDirectory, 'goldens', scenarioName, goldens[rendererIndex].file);
+    const rendererGoldenFile = this.rendererGolden(renderer).file;
+    const rendererGoldenPath =
+        join(rootDirectory, 'goldens', scenarioName, rendererGoldenFile);
     let rendererGolden;
     try {
       rendererGolden = await fs.readFile(rendererGoldenPath);
@@ -83,7 +92,7 @@ export class ArtifactCreator {
     // save goldens images to result folder which will be used to show in the
     // result-viewer page.
     await fs.writeFile(
-        join(outputDirectory, scenarioName, goldens[rendererIndex].file),
+        join(outputDirectory, scenarioName, rendererGoldenFile),
         rendererGolden);
 
     const rendererGoldenImage =
@@ -129,7 +138,7 @@ export class ArtifactCreator {
   async captureAndAnalyzeScreenshot(
       scenario: ScenarioConfig, renderer: string,
       quiet: boolean = false): Promise<ImageComparisonAnalysis> {
-    const {rootDirectory, goldens} = this;
+    const {rootDirectory} = this;
     const {name: scenarioName, dimensions, exclude} = scenario;
 
     console.log(`start compare ${renderer}'s golden with ${
@@ -158,9 +167,9 @@ export class ArtifactCreator {
     const screenshotImage =
         new Uint8ClampedArray(pngjs.PNG.sync.read(buffer).data);
 
-    const rendererIndex = 0;
     const rendererGoldenPath = join(
-        rootDirectory, 'goldens', scenarioName, goldens[rendererIndex].file);
+        rootDirectory, 'goldens', scenarioName,
+        this.rendererGolden(renderer).file);
     let rendererGolden;
     try {
       rendererGolden = await fs.readFile(rendererGoldenPath);
@@ -301,7 +310,23 @@ export class ArtifactCreator {
 
     if (this.browser == null) {
       console.log(`🚀 Launching browser`);
-      this.browser = await puppeteer.launch({headless: quiet});
+      // On Linux, ANGLE's Vulkan backend is used
+      // because its GL backend needs a display connection and fails in
+      // headless mode. Elsewhere ANGLE's native backend (D3D11 on Windows,
+      // Metal on macOS) works headless.
+      // Headless Chrome hides scrollbars by default; --hide-scrollbars does
+      // the same in headed mode so screenshots match either way.
+      const angleArgs = process.platform === 'linux' ?
+          ['--use-angle=vulkan', '--enable-features=Vulkan'] :
+          [];
+      this.browser = await puppeteer.launch({
+        headless: quiet,
+        protocolTimeout: 0,
+        args: [
+          ...angleArgs, '--ignore-gpu-blocklist', '--enable-gpu',
+          '--hide-scrollbars'
+        ]
+      });
     }
 
     const page = await this.browser.newPage();
@@ -315,8 +340,34 @@ export class ArtifactCreator {
       deviceScaleFactor: DEVICE_PIXEL_RATIO
     });
 
+    // Uncaught exceptions, unhandled rejections and crashes in the page mean
+    // the model will never become ready, so they fail the capture.
+    let failPage: (error: Error) => void;
+    const pageFailure = new Promise<never>((_, reject) => {
+      failPage = reject;
+    });
+    // Avoids an unhandled rejection when the page fails before it is awaited
+    pageFailure.catch(() => {});
+
     page.on('error', (error: any) => {
       console.log(`🚨 ${error}`);
+      failPage(new Error(`Page crashed: ${error?.message ?? error}`));
+    });
+
+    page.on('pageerror', (error: any) => {
+      console.log(`🚨 Page error: ${error?.stack ?? error}`);
+      failPage(new Error(`Page error: ${error?.message ?? error}`));
+    });
+
+    page.on('requestfailed', (request: any) => {
+      console.log(`🚨 Request failed: ${request.url()} (${
+          request.failure()?.errorText})`);
+    });
+
+    page.on('response', (response: any) => {
+      if (response.status() >= 400) {
+        console.log(`🚨 HTTP ${response.status()}: ${response.url()}`);
+      }
     });
 
     page.on('console', async (message: any) => {
@@ -330,46 +381,62 @@ export class ArtifactCreator {
 
     console.log(`🗺  Navigating to ${url}`);
 
-    await page.goto(url);
+    let evaluateError: string|null;
+    try {
+      await Promise.race([page.goto(url), pageFailure]);
 
-    console.log(
-        `🖌  Rendering ${scenarioName} with ${rendererConfig.description}`);
+      console.log(
+          `🖌  Rendering ${scenarioName} with ${rendererConfig.description}`);
 
-    // NOTE: The function passed to page.evaluate is stringified and eval'd
-    // in a browser context. Importantly, this implies that no external
-    // variables are captured in its closure scope. TypeScript compiler
-    // currently has no mechanism to detect this and will happily tell you
-    // your code is correct when it isn't.
-    const evaluateError = await page.evaluate(async (maxTimeInSec: number) => {
-      const modelBecomesReady = new Promise<void>((resolve, reject) => {
-        let timeout: NodeJS.Timeout;
-        if (maxTimeInSec > 0) {
-          timeout = setTimeout(() => {
-            reject(new Error(
-                `Stop capturing screenshot after ${maxTimeInSec} seconds`));
-          }, maxTimeInSec * 1000);
-        }
+      // NOTE: The function passed to page.evaluate is stringified and eval'd
+      // in a browser context. Importantly, this implies that no external
+      // variables are captured in its closure scope. TypeScript compiler
+      // currently has no mechanism to detect this and will happily tell you
+      // your code is correct when it isn't.
+      evaluateError = await Promise.race([
+        page.evaluate(async (maxTimeInSec: number) => {
+          const modelBecomesReady = new Promise<void>((resolve, reject) => {
+            let timeout: NodeJS.Timeout;
+            if (maxTimeInSec > 0) {
+              timeout = setTimeout(() => {
+                reject(new Error(
+                    `Stop capturing screenshot after ${maxTimeInSec} seconds`));
+              }, maxTimeInSec * 1000);
+            }
 
-        self.addEventListener('model-ready', () => {
-          if (maxTimeInSec > 0) {
-            clearTimeout(timeout);
+            self.addEventListener('model-ready', () => {
+              if (maxTimeInSec > 0) {
+                clearTimeout(timeout);
+              }
+              resolve();
+            }, {once: true});
+
+            // Renderers dispatch this when they fail to load or render
+            self.addEventListener('model-error', (event: Event) => {
+              if (maxTimeInSec > 0) {
+                clearTimeout(timeout);
+              }
+              const {message} = (event as CustomEvent).detail ?? {};
+              reject(new Error(`Renderer error: ${message ?? 'unknown'}`));
+            }, {once: true});
+          });
+
+          try {
+            await modelBecomesReady;
+            return null;
+          } catch (error) {
+            return error.message;
           }
-          resolve();
-        }, {once: true});
-      });
-
-      try {
-        await modelBecomesReady;
-        return null;
-      } catch (error) {
-        return error.message;
-      }
-    }, maxTimeInSec);
+        }, maxTimeInSec),
+        pageFailure
+      ]);
+    } catch (error) {
+      evaluateError = error.message;
+    }
 
     if (evaluateError) {
-      console.log(evaluateError);
-      await this.browser.close();
-      this.browser = null;
+      console.log(`🚨 ${evaluateError}`);
+      await page.close().catch(() => {});
       throw new Error(evaluateError);
     }
 
@@ -384,7 +451,7 @@ export class ArtifactCreator {
     const screenshot =
         await page.screenshot({path: outputPath, omitBackground: true});
 
-    page.close();
+    await page.close();
 
     return screenshot;
   }

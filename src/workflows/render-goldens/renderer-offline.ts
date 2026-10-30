@@ -14,6 +14,7 @@
  */
 
 import {spawnSync} from 'child_process';
+import {normalize} from 'path';
 
 import {ScenarioConfig} from '../../common.js';
 
@@ -33,7 +34,8 @@ export const rendererOffline = async(
   let renderConfig = {scenario: scenario, outputFile: outputFile}
 
   const args = rendererArgs.concat([JSON.stringify(renderConfig)])
-  const result = spawnSync(rendererCommand, args);
+  // Normalize so the configured path can use either / or \ as separator.
+  const result = spawnSync(normalize(rendererCommand), args);
 
   if (result.error) {  // handle issues with the external process
     console.error(result.error);

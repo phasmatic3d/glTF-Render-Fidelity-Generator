@@ -147,7 +147,7 @@ async function main() {
           numMatches++;
         }
       });
-      if (numMatches) {
+      if (!numMatches) {
         warn(`Requested scenario "${
             scenarioName}" does not match any names found in config`);
       }
@@ -168,6 +168,7 @@ async function main() {
 
         childProcess.once('error', (error: any) => {
           warn(error);
+          reject(error);
         });
 
         childProcess.once('exit', (code) => {
@@ -194,6 +195,9 @@ async function main() {
 
     const server = HTTPServer.createServer({root: '', cache: -1});
     server.listen(args.port);
+
+    // A failing scenario is recorded and skipped so the others still render
+    const failures: string[] = [];
 
     for (const renderer of renderers) {
       const {
@@ -250,8 +254,8 @@ async function main() {
           const setup = join(rendererDirectory, scripts.setup);
           console.log(`🚧 Running setup script: ${scripts.setup}`);
           await run(
-              setup,
-              [],
+              process.execPath,
+              [setup],
               {
                 SCENARIO_NAME: scenarioName,
                 MODEL: resolve(rendererDirectory, model),
@@ -280,8 +284,11 @@ async function main() {
                   rendererCommand.args,
                   goldenPath);
             } catch (error) {
-              throw new Error(`Offline rendering process for ${
-                  rendererDescription} failed: ${error.message}`);
+              const failure = `${rendererName} / ${scenarioName}: ${
+                  rendererDescription} offline render failed: ${
+                  error.message}`;
+              warn(failure);
+              failures.push(failure);
             }
           }
         } else {
@@ -294,15 +301,25 @@ async function main() {
                 -1,
                 args.quiet);
           } catch (error) {
-            throw new Error(`Failed to update ${
-                rendererDescription} screenshot: ${error.message}`);
+            const failure =
+                `${rendererName} / ${scenarioName}: ${error.message}`;
+            warn(`Skipping, failed to update screenshot: ${failure}`);
+            failures.push(failure);
           }
         }
       }
 
-      screenshotCreator.close();
+      await screenshotCreator.close();
     }
     server.close();
+
+    if (failures.length > 0) {
+      console.log(`\n❌ ${failures.length} scenario(s) failed:`);
+      for (const failure of failures) {
+        console.log(`  - ${failure}`);
+      }
+      throw new Error(`${failures.length} scenario(s) failed to render`);
+    }
   };
 
   updateScreenshots(config).then(() => exit(0)).catch((error) => {
