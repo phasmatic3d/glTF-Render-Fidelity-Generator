@@ -311,22 +311,12 @@ export class ArtifactCreator {
 
     if (this.browser == null) {
       console.log(`🚀 Launching browser`);
-      // On Linux, ANGLE's Vulkan backend is used
-      // because its GL backend needs a display connection and fails in
-      // headless mode. Elsewhere ANGLE's native backend (D3D11 on Windows,
-      // Metal on macOS) works headless.
       // Headless Chrome hides scrollbars by default; --hide-scrollbars does
       // the same in headed mode so screenshots match either way.
-      const angleArgs = process.platform === 'linux' ?
-          ['--use-angle=vulkan', '--enable-features=Vulkan'] :
-          [];
       this.browser = await puppeteer.launch({
         headless: quiet,
         protocolTimeout: 0,
-        args: [
-          ...angleArgs, '--ignore-gpu-blocklist', '--enable-gpu',
-          '--hide-scrollbars'
-        ]
+        args: ['--ignore-gpu-blocklist', '--enable-gpu', '--hide-scrollbars']
       });
     }
 
