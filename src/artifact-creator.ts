@@ -296,7 +296,8 @@ export class ArtifactCreator {
   async captureScreenshot(
       renderer: string, scenarioName: string, dimensions: Dimensions,
       outputPath: string = join(this.outputDirectory, 'model-viewer.png'),
-      maxTimeInSec: number = -1, quiet: boolean = false) {
+      maxTimeInSec: number = -1, quiet: boolean = false,
+      model: string|null = null) {
     const scaledWidth = dimensions.width;
     const scaledHeight = dimensions.height;
     const rendererConfig = this[$configReader].rendererConfig(renderer);
@@ -332,7 +333,8 @@ export class ArtifactCreator {
     const page = await this.browser.newPage();
 
     const url = `${this.baseUrl}?hide-ui&config=../../config.json&scenario=${
-        encodeURIComponent(scenarioName)}`;
+        encodeURIComponent(scenarioName)}${
+        model != null ? `&model=${encodeURIComponent(model)}` : ''}`;
 
     await page.setViewport({
       width: scaledWidth,

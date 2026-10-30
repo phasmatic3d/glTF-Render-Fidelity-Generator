@@ -70,6 +70,12 @@ export class RendererConfiguration extends LitElement {
       } else {
         this.scenario =
             (new ConfigReader(this.config)).scenarioConfig(this.scenarioName);
+
+        // Lets the harness swap in a fallback model, e.g. the glTF-Binary one
+        const {model} = this.queryParameters;
+        if (model != null && this.scenario != null) {
+          this.scenario.model = model;
+        }
       }
 
       const previousScenarioName = changedProperties.get('scenarioName');

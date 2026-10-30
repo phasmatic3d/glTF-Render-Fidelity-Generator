@@ -180,6 +180,28 @@ async function main() {
         });
       });
 
+  // Retries a failed render with the model's glTF-Binary variant, if present
+  const withBinaryFallback = async (
+      rendererDirectory: string, model: string,
+      render: (model: string) => Promise<unknown>) => {
+    try {
+      await render(model);
+    } catch (error) {
+      const binaryModel = model.replace('/glTF/', '/glTF-Binary/')
+                              .replace(/\.gltf$/, '.glb');
+      if (binaryModel === model) {
+        throw error;
+      }
+      try {
+        await fs.access(resolve(rendererDirectory, binaryModel));
+      } catch {
+        throw error;
+      }
+      warn(`${error.message}; retrying with ${binaryModel}`);
+      await render(binaryModel);
+    }
+  };
+
   const updateScreenshots = async (config: ImageComparisonConfig) => {
     const {scenarios} = config;
 
@@ -278,11 +300,14 @@ async function main() {
             try {
               process.stdout.write(
                   rendererName + `: Rendering ` + scenarioName + '...');
-              await rendererOffline(
-                  scenario,
-                  rendererCommand.executable,
-                  rendererCommand.args,
-                  goldenPath);
+              await withBinaryFallback(
+                  rendererDirectory,
+                  model,
+                  (model) => rendererOffline(
+                      {...scenario!, model},
+                      rendererCommand.executable,
+                      rendererCommand.args,
+                      goldenPath));
             } catch (error) {
               const failure = `${rendererName} / ${scenarioName}: ${
                   rendererDescription} offline render failed: ${
@@ -293,13 +318,17 @@ async function main() {
           }
         } else {
           try {
-            await screenshotCreator.captureScreenshot(
-                rendererName,
-                scenarioName,
-                dimensions,
-                goldenPath,
-                -1,
-                args.quiet);
+            await withBinaryFallback(
+                rendererDirectory,
+                model,
+                (model) => screenshotCreator.captureScreenshot(
+                    rendererName,
+                    scenarioName,
+                    dimensions,
+                    goldenPath,
+                    -1,
+                    args.quiet,
+                    model));
           } catch (error) {
             const failure =
                 `${rendererName} / ${scenarioName}: ${error.message}`;
