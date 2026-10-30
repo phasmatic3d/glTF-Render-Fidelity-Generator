@@ -2,3 +2,7 @@
 	path = glTF-Sample-Assets
 	url = https://github.com/KhronosGroup/glTF-Sample-Assets.git
 	branch = main
+[submodule "glTF-Test-Assets-Interactivity"]
+	path = glTF-Test-Assets-Interactivity
+	url = https://github.com/KhronosGroup/glTF-Test-Assets-Interactivity.git
+	branch = main
