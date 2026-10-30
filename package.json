@@ -8,7 +8,7 @@
     "test": "node --experimental-modules ./lib/workflows/test-fidelity.js --config=./test/config.json",
     "render-goldens": "node --experimental-modules ./lib/workflows/render-goldens.js --config=./test/config.json",
     "build": "npm run build:dspbr-pt && npm run build:gltf-sample-renderer && tsc && rollup -c",
-    "prepare": "npm run fetch:filament && npm run fetch:model-viewer && node scripts/fetch-renderers.js",
+    "setup": "npm run fetch:filament && npm run fetch:model-viewer && node scripts/fetch-renderers.js",
     "fetch:renderers": "node scripts/fetch-renderers.js",
     "fetch:filament": "node scripts/fetch-filament.js",
     "fetch:model-viewer": "node scripts/fetch-model-viewer.js",
