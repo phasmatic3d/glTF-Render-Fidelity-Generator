@@ -78,6 +78,13 @@ if (!scenario.renderSkybox) {
   args.push('--useSolidBackground', '--solidBackgroundColor', '0', '0', '0');
 }
 
+// DLSS-RR is on by default in DLSS builds and writes an opaque alpha, hiding
+// the transparent background. Builds without DLSS reject the parameter.
+const help = spawnSync(EXECUTABLE, ['--help'], {encoding: 'utf8'});
+if (`${help.stdout}${help.stderr}`.includes('dlssEnable')) {
+  args.push('--dlssEnable', '0');
+}
+
 const result = spawnSync(EXECUTABLE, args, {stdio: 'inherit'});
 
 if (result.error != null) {
