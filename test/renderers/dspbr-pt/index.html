@@ -19,7 +19,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, minimum-scale=1.0, initial-scale=1.0, user-scalable=yes">
-  <title>Pathtracing Fidelity Tests</title>
+  <title>dspbr-pt Fidelity Tests</title>
+  <link rel="icon" href="../favicon.ico">
 
   <style>
     body { margin: 0; }
@@ -33,7 +34,6 @@
     </dspbr-pt-viewer>
   </renderer-harness>
 
-  <script src="../../../node_modules/filament/filament.js"></script>
   <script type="module" src="../../../dist/renderer-harness.js"></script>
   <script type="module" src="../../../dist/dspbr-pt-viewer.js"></script>
   <script>
@@ -42,6 +42,10 @@
         if (event.detail.visible) {
           self.dispatchEvent(new CustomEvent('model-ready'));
         }
+      }, { once: true });
+
+      dspbrptViewer.addEventListener('model-error', (event) => {
+        self.dispatchEvent(new CustomEvent('model-error', { detail: event.detail }));
       }, { once: true });
 
       dspbrptViewer.scenario = harness.scenario;

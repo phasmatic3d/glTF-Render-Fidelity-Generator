@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, minimum-scale=1.0, initial-scale=1.0, user-scalable=yes">
   <title>RhodoniteTS Fidelity Tests</title>
+  <link rel="icon" href="../favicon.ico">
 
   <style>
   body { margin: 0; }
@@ -18,9 +19,7 @@
   </renderer-harness>
 
   <script type="module" src="../../../dist/renderer-harness.js"></script>
-  <script src="./ibl_prefiltering_wasm.js"></script>
   <script src="https://www.gstatic.com/draco/v1/decoders/draco_decoder_gltf.js"></script>
-  <script src="../../../node_modules/@khronosgroup/gltf-viewer/dist/libs/libktx.js"></script>
   <script type="module" src="../../../dist/rhodonite-viewer.js"></script>
   <script>
   harness.addEventListener('scenario-change', () => {
@@ -28,6 +27,10 @@
     if (event.detail.visible) {
         self.dispatchEvent(new CustomEvent('model-ready'));
     }
+    }, { once: true });
+
+    RhodoniteViewer.addEventListener('model-error', (event) => {
+      self.dispatchEvent(new CustomEvent('model-error', { detail: event.detail }));
     }, { once: true });
 
     RhodoniteViewer.scenario = harness.scenario;
