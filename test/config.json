@@ -1,8 +1,16 @@
 {
   "renderers": [
     {
+      "name": "gltf-sample-viewer",
+      "description": "gltf-sample-viewer"
+    },
+    {
       "name": "three",
-      "description": "three.js r185"
+      "description": "three.js"
+    },
+    {
+      "name": "model-viewer",
+      "description": "<model-viewer>"
     },
     {
       "name": "filament",
@@ -14,10 +22,6 @@
     {
       "name": "babylon",
       "description": "Babylon"
-    },
-    {
-      "name": "gltf-sample-viewer",
-      "description": "gltf-sample-viewer"
     },
     {
       "name": "three-gpu-pathtracer",
@@ -243,7 +247,7 @@
         "width": 550
       },
       "exclude": [
-        "three"
+        "model-viewer"
       ]
     },
     {
@@ -484,7 +488,7 @@
         "radius": 0
       },
       "exclude": [
-        "three",
+        "model-viewer",
         "stellar",
         "three-gpu-pathtracer"
       ]
@@ -563,7 +567,7 @@
       },
       "renderSkybox": true,
       "exclude": [
-        "three",
+        "model-viewer",
         "stellar"
       ]
     },
@@ -645,7 +649,7 @@
         "radius": 22.00
       },
       "exclude": [
-        "three",
+        "model-viewer",
         "vray"
       ]
     },
@@ -784,7 +788,7 @@
       "exclude": [
         "stellar",
         "vray",
-        "three",
+        "model-viewer",
         "three-gpu-pathtracer"
       ]
     },
