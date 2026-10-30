@@ -166,12 +166,17 @@ async function main() {
     console.log(`Passed ${fidelityRegressionPassedCount} scenarios ✅`);
     if (fidelityRegressionErrorCount > 0) {
       console.log(`Failed ${fidelityRegressionErrorCount} scenarios ❌`);
-    } else {
+    } else if (fidelityRegressionPassedCount > 0) {
       let maxError = -Infinity;
       for (const result of fidelityRegressionResults) {
         maxError = Math.max(maxError, toDecibel(result.rmsDistanceRatio));
       }
-      console.log('Worst scenario RMS:', maxError, 'dB');
+      // an RMS of 0 means a pixel-identical match, which is -Infinity in dB
+      if (maxError === -Infinity) {
+        console.log('Worst scenario RMS: 0 (identical to golden)');
+      } else {
+        console.log('Worst scenario RMS:', maxError, 'dB');
+      }
     }
 
     if (fidelityRegressionWarningCount > 0) {

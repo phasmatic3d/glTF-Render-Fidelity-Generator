@@ -65,14 +65,20 @@ export class ArtifactCreator {
     return golden;
   }
 
-  async compareRenderers(scenario: ScenarioConfig, renderer: string) {
+  /**
+   * Returns the names of renderers whose goldens are missing for this
+   * scenario. Those renderers are skipped rather than failing the comparison.
+   */
+  async compareRenderers(scenario: ScenarioConfig, renderer: string):
+      Promise<Array<string>> {
     const analysisResults: AnalysisResults = [];
+    const missingGoldens: Array<string> = [];
     const {rootDirectory, outputDirectory, goldens} = this;
     const {name: scenarioName, exclude, dimensions} = scenario;
 
     // skip if this renderer is excluded from this scenario
     if (exclude != null && exclude.includes(renderer)) {
-      return;
+      return missingGoldens;
     }
 
     console.log(
@@ -112,8 +118,14 @@ export class ArtifactCreator {
       try {
         candidateGolden = await fs.readFile(candidateGoldenPath);
       } catch (error) {
-        throw new Error(`❌ Failed to read ${golden.name}'s ${
-            scenarioName} golden! Error message: ${error.message}`);
+        if (error.code !== 'ENOENT') {
+          throw new Error(`❌ Failed to read ${golden.name}'s ${
+              scenarioName} golden! Error message: ${error.message}`);
+        }
+        console.warn(`⚠️ ${golden.name}'s ${
+            scenarioName} golden is missing, skipping it`);
+        missingGoldens.push(golden.name);
+        continue;
       }
 
       // save goldens images to result folder which will be used to show in the
@@ -127,12 +139,19 @@ export class ArtifactCreator {
           rendererGoldenImage, candidateGoldenImage, dimensions);
       analysisResults.push(analysisResult);
     }
-    const scenarioRecord = {analysisResults, scenario};
+    // record missing goldens as excluded so the results viewer hides them and
+    // keeps analysisResults aligned with the remaining renderers
+    const scenarioRecord = {
+      analysisResults,
+      scenario: {...scenario, exclude: [...(exclude ?? []), ...missingGoldens]}
+    };
 
     console.log(`\n💾 Recording analysis`);
     await fs.writeFile(
         join(outputDirectory, scenarioName, 'analysis.json'),
         JSON.stringify(scenarioRecord));
+
+    return missingGoldens;
   }
 
   async captureAndAnalyzeScreenshot(
@@ -230,8 +249,9 @@ export class ArtifactCreator {
       const scenarioOutputDirectory = join(outputDirectory, scenarioName);
       mkdirp.sync(scenarioOutputDirectory);
 
+      let missingGoldens: Array<string> = [];
       try {
-        await this.compareRenderers(scenario, renderer);
+        missingGoldens = await this.compareRenderers(scenario, renderer);
       } catch (error) {
         const errorMessage =
             `❌Fail to compare ${renderer} with other renderers of scenario ${
@@ -251,7 +271,10 @@ export class ArtifactCreator {
           fidelityRegressionResults.errors.push(message);
         }
 
-        analyzedScenarios.push(scenario);
+        analyzedScenarios.push({
+          ...scenario,
+          exclude: [...(scenario.exclude ?? []), ...missingGoldens]
+        });
       }
     }
 
