@@ -62,6 +62,8 @@ const args = [
   '--ptMaxSamples', '500',
   '--ptSamples', '1',
   '--ptAdaptiveSampling', '0',
+  '--oidnEnable', '1',
+  '--oidnQuality', '2',
   '--renderSystem', '0',
   '--envSystem', '1',
   // Match the tonemapping of the Blender Cycles
