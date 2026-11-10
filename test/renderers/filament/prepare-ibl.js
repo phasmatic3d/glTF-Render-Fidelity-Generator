@@ -3,10 +3,9 @@
 // scripts/fetch-filament.js as part of `npm run build`.
 
 import {spawnSync} from 'child_process';
-import {existsSync, mkdirSync, readFileSync, rmSync, writeFileSync} from 'fs';
-import jpeg from 'jpeg-js';
+import {existsSync, mkdirSync, rmSync} from 'fs';
 import {basename, dirname, extname, join, resolve} from 'path';
-import {PNG} from 'pngjs';
+import sharp from 'sharp';
 import {fileURLToPath} from 'url';
 import {parseArgs} from 'util';
 
@@ -77,12 +76,12 @@ let cmgenInputFile = resolve(iblInputFile);
 // cmgen can't decode JPEGs, so convert them to PNG first. jpeg-js decodes to
 // RGBA but cmgen only accepts 3 channels, so the PNG is written as RGB.
 if (iblExtension === 'jpg' || iblExtension === 'jpeg') {
-  const {width, height, data} =
-      jpeg.decode(readFileSync(cmgenInputFile), {maxMemoryUsageInMB: 2048});
-  const png = new PNG({width, height});
-  png.data = Buffer.from(data);
-  cmgenInputFile = join(IBL_DIR, `${iblBasename}.png`);
-  writeFileSync(cmgenInputFile, PNG.sync.write(png, {colorType: 2}));
+  const pngFile = join(IBL_DIR, `${iblBasename}.png`);
+  await sharp(cmgenInputFile, {limitInputPixels: false})
+      .removeAlpha()
+      .png()
+      .toFile(pngFile);
+  cmgenInputFile = pngFile;
 }
 
 const cmgenArgs = ['--format=ktx', '-x', iblOutputPath, cmgenInputFile];
