@@ -16,11 +16,11 @@
 import {promises as fs} from 'fs';
 import {mkdirp} from 'mkdirp';
 import {join, resolve} from 'path';
-import pngjs from 'pngjs';
 import puppeteer, {Browser} from 'puppeteer';
 
 import {DEVICE_PIXEL_RATIO, Dimensions, FIDELITY_TEST_THRESHOLD, FidelityRegressionResults, GoldenConfig, ImageComparator, ImageComparisonAnalysis, ImageComparisonConfig, ScenarioConfig, toDecibel} from './common.js';
 import {ConfigReader} from './config-reader.js';
+import {decodeRGBA, encodeWebpLossless, goldenFilename} from './image-io.js';
 
 
 const $configReader = Symbol('configReader');
@@ -53,7 +53,7 @@ export class ArtifactCreator {
 
   protected get goldens(): Array<GoldenConfig> {
     return this.config.renderers.map(
-        renderer => ({...renderer, file: `${renderer.name}-golden.png`}));
+        renderer => ({...renderer, file: goldenFilename(renderer.name)}));
   }
 
   protected rendererGolden(renderer: string): GoldenConfig {
@@ -101,8 +101,7 @@ export class ArtifactCreator {
         join(outputDirectory, scenarioName, rendererGoldenFile),
         rendererGolden);
 
-    const rendererGoldenImage =
-        new Uint8ClampedArray(pngjs.PNG.sync.read(rendererGolden).data);
+    const rendererGoldenImage = await decodeRGBA(rendererGolden);
 
     for (const golden of goldens) {
       if (golden.name === renderer ||
@@ -133,8 +132,7 @@ export class ArtifactCreator {
       await fs.writeFile(
           join(outputDirectory, scenarioName, golden.file), candidateGolden);
 
-      const candidateGoldenImage =
-          new Uint8ClampedArray(pngjs.PNG.sync.read(candidateGolden).data);
+      const candidateGoldenImage = await decodeRGBA(candidateGolden);
       const analysisResult = await this.analyze(
           rendererGoldenImage, candidateGoldenImage, dimensions);
       analysisResults.push(analysisResult);
@@ -182,9 +180,7 @@ export class ArtifactCreator {
       throw new Error(`❌ ${renderer}'s screenshot of ${
           scenarioName} is not captured correctly (value is null).`);
     }
-    const buffer = Buffer.from(screenshot);
-    const screenshotImage =
-        new Uint8ClampedArray(pngjs.PNG.sync.read(buffer).data);
+    const screenshotImage = await decodeRGBA(screenshot);
 
     const rendererGoldenPath = join(
         rootDirectory, 'goldens', scenarioName,
@@ -196,8 +192,7 @@ export class ArtifactCreator {
       throw new Error(`❌ Failed to read ${renderer}'s ${
           scenarioName} golden! Error message: ${error.message}`);
     }
-    const rendererGoldenImage =
-        new Uint8ClampedArray(pngjs.PNG.sync.read(rendererGolden).data);
+    const rendererGoldenImage = await decodeRGBA(rendererGolden);
 
     const result =
         await this.analyze(screenshotImage, rendererGoldenImage, dimensions);
@@ -318,7 +313,7 @@ export class ArtifactCreator {
 
   async captureScreenshot(
       renderer: string, scenarioName: string, dimensions: Dimensions,
-      outputPath: string = join(this.outputDirectory, 'model-viewer.png'),
+      outputPath: string = join(this.outputDirectory, 'gltf-sample-viewer.webp'),
       maxTimeInSec: number = -1, quiet: boolean = false,
       model: string|null = null) {
     const scaledWidth = dimensions.width;
@@ -463,10 +458,18 @@ export class ArtifactCreator {
       // Ignored...
     }
 
+    // Capture as a PNG and re-encode
+    // it as lossless WebP. 
+    // Directly requesting WebP might encode
+    // in lower quality on some browsers.
     const screenshot =
-        await page.screenshot({path: outputPath, omitBackground: true});
+        await page.screenshot({type: 'png', omitBackground: true});
 
     await page.close();
+
+    if (outputPath) {
+      await fs.writeFile(outputPath, await encodeWebpLossless(screenshot));
+    }
 
     return screenshot;
   }

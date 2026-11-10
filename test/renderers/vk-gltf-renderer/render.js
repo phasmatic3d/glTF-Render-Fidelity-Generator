@@ -3,9 +3,10 @@
 // {"scenario": {...}, "outputFile": "..."}
 
 import {spawnSync} from 'child_process';
-import {readFileSync, writeFileSync} from 'fs';
+import {mkdtempSync, rmSync} from 'fs';
+import {tmpdir} from 'os';
 import {dirname, join, resolve} from 'path';
-import {PNG} from 'pngjs';
+import sharp from 'sharp';
 import {fileURLToPath} from 'url';
 
 const RENDERER_DIR = dirname(fileURLToPath(import.meta.url));
@@ -52,6 +53,11 @@ const up = [
 const cameraString = `{${eye.join(', ')}}, {${center.join(', ')}}, {${
     up.join(', ')}}, {${verticalFoV}}`;
 
+// The renderer only writes PNG or JPEG, so render a PNG into a temporary
+// directory and convert it to lossless WebP afterwards.
+const tempDirectory = mkdtempSync(join(tmpdir(), 'vk-gltf-renderer-'));
+const pngFile = join(tempDirectory, 'render.png');
+
 // Scenario paths are relative to the renderer's directory.
 const args = [
   '--headless',
@@ -73,7 +79,7 @@ const args = [
   '--tmMethod', '3',
   '--tmExposure', `${1 / 0.6}`,
   '--tmDither', '0',
-  '--output', outputFile,
+  '--output', pngFile,
 ];
 
 if (!scenario.renderSkybox) {
@@ -89,19 +95,29 @@ if (`${help.stdout}${help.stderr}`.includes('dlssEnable')) {
 
 const result = spawnSync(EXECUTABLE, args, {stdio: 'inherit'});
 
+let status = result.status != null ? result.status : 1;
 if (result.error != null) {
   console.error(result.error);
-  process.exit(1);
+  status = 1;
 }
 
-// The path tracer writes zero alpha wherever a primary ray misses the scene,
-// even though the environment is in the color channels. Make the skybox visible.
-if (result.status === 0 && scenario.renderSkybox) {
-  const png = PNG.sync.read(readFileSync(outputFile));
-  for (let i = 3; i < png.data.length; i += 4) {
-    png.data[i] = 255;
+try {
+  if (status === 0) {
+    let image = sharp(pngFile);
+    // The path tracer writes zero alpha wherever a primary ray misses the
+    // scene, even though the environment is in the color channels. Drop the
+    // alpha to make the skybox visible.
+    if (scenario.renderSkybox) {
+      image = image.removeAlpha();
+    }
+    await image.webp({lossless: true, exact: true, effort: 6})
+        .toFile(outputFile);
   }
-  writeFileSync(outputFile, PNG.sync.write(png));
+} catch (error) {
+  console.error(error);
+  status = 1;
+} finally {
+  rmSync(tempDirectory, {recursive: true, force: true});
 }
 
-process.exit(result.status != null ? result.status : 1);
+process.exit(status);

@@ -80,7 +80,7 @@ export class ImageComparisonApp extends LitElement {
     }
 
     const goldens = config.renderers.map(
-        renderer => ({...renderer, file: `${renderer.name}-golden.png`}));
+        renderer => ({...renderer, file: `${renderer.name}-golden.webp`}));
 
     const scenarios = config!.scenarios.map((scenario) => html`
 <rendering-scenario id="${scenario.name}"

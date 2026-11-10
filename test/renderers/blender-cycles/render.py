@@ -53,12 +53,13 @@ def save_image(path, data):
     height, width, channels = data.shape
     rgba = np.ones((height, width, 4), dtype=np.float32)
     rgba[:, :, :channels] = data / 255.0
-    image = bpy.data.images.new("png_output", width, height, alpha=channels == 4)
+    image = bpy.data.images.new("webp_output", width, height, alpha=channels == 4)
     # Blender stores pixels bottom row first
     image.pixels.foreach_set(np.flipud(rgba).ravel())
     image.filepath_raw = path
-    image.file_format = "PNG"
-    image.save()
+    image.file_format = "WEBP"
+    # Blender writes lossless WebP at quality 100
+    image.save(quality=100)
     bpy.data.images.remove(image)
 
 

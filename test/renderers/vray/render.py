@@ -53,7 +53,7 @@ def ACESFilmicToneMapping(img: np.array) -> np.array:
 
 def save_image(path, data):
     image = Image.fromarray(data)
-    image.save(path, "PNG")
+    image.save(path, "WEBP", lossless=True, exact=True, method=6)
 
 
 def dumpMsg(renderer, message, level, instant):

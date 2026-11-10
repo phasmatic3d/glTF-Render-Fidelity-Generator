@@ -24,6 +24,7 @@ import {hideBin} from 'yargs/helpers';
 import {ArtifactCreator} from '../artifact-creator.js';
 import {ImageComparisonConfig} from '../common.js';
 import {ConfigReader} from '../config-reader.js';
+import {goldenFilename} from '../image-io.js';
 
 import {rendererOffline} from './render-goldens/renderer-offline.js';
 
@@ -252,9 +253,9 @@ async function main() {
           continue;
         }
 
-        const goldenFilename = `${rendererName}-golden.png`;
         const rendererDirectory = join(renderersDirectory, rendererName);
-        const goldenPath = join(scenarioGoldensDirectory, goldenFilename);
+        const goldenPath =
+            join(scenarioGoldensDirectory, goldenFilename(rendererName));
 
         if (scenarioWhitelist != null && !scenarioWhitelist.has(scenarioName)) {
           console.log(`⏭  Skipping ${scenarioName}...`);
